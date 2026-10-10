@@ -1,0 +1,46 @@
+{
+  "stage": "transform",
+  "generated_at": "2026-10-08T20:49:06Z",
+  "status": "completed",
+  "duration_seconds": 2.251,
+  "outputs": {
+    "dim_time": {
+      "file": "03_prepared_dim_time.csv",
+      "rows": 2
+    },
+    "dim_geografia": {
+      "file": "03_prepared_dim_geografia.csv",
+      "rows": 2240
+    },
+    "dim_regime": {
+      "file": "03_prepared_dim_regime.csv",
+      "rows": 4
+    },
+    "dim_facility": {
+      "file": "03_prepared_dim_facility.csv",
+      "rows": 10921
+    },
+    "dim_capacity_type": {
+      "file": "03_prepared_dim_capacity_type.csv",
+      "rows": 63
+    },
+    "fact_affiliates": {
+      "file": "03_prepared_fact_affiliates.csv",
+      "rows": 3369
+    },
+    "fact_facility_capacity": {
+      "file": "03_prepared_fact_facility_capacity.csv",
+      "rows": 31496
+    }
+  },
+  "business_check_issues": 0,
+  "rows": {
+    "dim_time": 2,
+    "dim_geografia": 2240,
+    "dim_regime": 4,
+    "dim_facility": 10921,
+    "dim_capacity_type": 63,
+    "fact_affiliates": 3369,
+    "fact_facility_capacity": 31496
+  }
+}

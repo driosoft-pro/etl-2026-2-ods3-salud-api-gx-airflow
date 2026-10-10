@@ -1,0 +1,18 @@
+{
+  "stage": "load",
+  "generated_at": "2026-10-08T20:49:19Z",
+  "status": "completed",
+  "duration_seconds": 1.883,
+  "target": "postgres+csv",
+  "action": "postgres+csv",
+  "rows": {
+    "dim_time": 2,
+    "dim_geografia": 2240,
+    "dim_regime": 4,
+    "dim_facility": 10921,
+    "dim_capacity_type": 63,
+    "fact_affiliates": 3369,
+    "fact_capacity": 31496
+  },
+  "processed_dir": "/opt/airflow/data/processed"
+}

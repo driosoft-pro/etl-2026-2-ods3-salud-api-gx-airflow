@@ -1,0 +1,24 @@
+{
+  "stage": "summary",
+  "generated_at": "2026-10-08T20:49:24Z",
+  "status": "completed",
+  "duration_seconds": 0.072,
+  "output_dir": "/opt/airflow/data/output",
+  "outputs": {
+    "r1_affiliates_by_regime.csv": {
+      "rows": 4
+    },
+    "r2_top_bottom_departments.csv": {
+      "rows": 20
+    },
+    "r3_facilities_by_nature_care_level.csv": {
+      "rows": 7
+    },
+    "r4_capacity_per_affiliate_by_department.csv": {
+      "rows": 33
+    },
+    "r5_regime_by_region.csv": {
+      "rows": 23
+    }
+  }
+}
