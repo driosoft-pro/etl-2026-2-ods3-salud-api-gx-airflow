@@ -34,8 +34,25 @@ from src.quality import (
     CriticalQualityError
 )
 from src.load import load_all, export_to_csv, get_connection
+from src import audit
 
 log = logging.getLogger(__name__)
+
+
+def _audit_run_id() -> int | None:
+    """Registro idempotente de la corrida en audit.etl_run (clave = dag_run.run_id)."""
+    try:
+        context = get_current_context()
+        dag_run = context.get("dag_run")
+        return audit.ensure_run(
+            run_key=dag_run.run_id if dag_run else None,
+            run_type="AIRFLOW",
+            dag_id=context.get("dag").dag_id if context.get("dag") else None,
+            trigger_source="airflow",
+        )
+    except Exception as e:
+        log.warning(f"Audit: no se pudo obtener run_id de Airflow ({e})")
+        return None
 
 DEFAULT_ARGS = {
     "owner": "health-data-engineering",
@@ -75,12 +92,22 @@ def create_health_pipeline():
         Evaluates DQ-01 to DQ-05. Satisfies 100% of quality contracts in reliable mode.
         """
         log.info("Task [validate_primary_raw]: Executing GX Gate 1 (100% Reliable Mode)...")
+        run_id = _audit_run_id()
         raw_data = extract_all()
-        result = validate_primary_raw(
-            raw_data['affiliates'],
-            raw_data['facilities'],
-            simulate_failure=None
-        )
+        try:
+            result = validate_primary_raw(
+                raw_data['affiliates'],
+                raw_data['facilities'],
+                simulate_failure=None
+            )
+        except CriticalQualityError as cqe:
+            audit.log_dq_results(run_id, cqe.details)
+            audit.log_step(run_id, 'VALIDATE', 'gate_1_primary_raw', 'FAILED', message=str(cqe))
+            audit.finish_run(run_id, audit.STATUS_BLOCKED, stage_reached='VALIDATE', error_message=str(cqe))
+            raise
+        audit.log_dq_results(run_id, result)
+        audit.log_step(run_id, 'VALIDATE', 'gate_1_primary_raw', 'SUCCESS',
+                       message=f"{result['passed_rules']}/{result['total_rules']} rules")
         log.info(f"Gate 1 passed: {result['passed_rules']}/{result['total_rules']} rules satisfied")
         return {
             "status": "passed",
@@ -117,12 +144,22 @@ def create_health_pipeline():
         Evaluates DQ-06 and DQ-07.
         """
         log.info("Task [validate_api_raw]: Executing GX Gate 2 (API Validation)...")
+        run_id = _audit_run_id()
         api_data = extract_api_all(force_cache=True)
-        result = validate_api_raw(
-            api_data['departments'],
-            api_data['regions'],
-            simulate_failure=None
-        )
+        try:
+            result = validate_api_raw(
+                api_data['departments'],
+                api_data['regions'],
+                simulate_failure=None
+            )
+        except CriticalQualityError as cqe:
+            audit.log_dq_results(run_id, cqe.details)
+            audit.log_step(run_id, 'VALIDATE', 'gate_2_api_raw', 'FAILED', message=str(cqe))
+            audit.finish_run(run_id, audit.STATUS_BLOCKED, stage_reached='VALIDATE', error_message=str(cqe))
+            raise
+        audit.log_dq_results(run_id, result)
+        audit.log_step(run_id, 'VALIDATE', 'gate_2_api_raw', 'SUCCESS',
+                       message=f"{result['passed_rules']}/{result['total_rules']} rules")
         log.info(f"Gate 2 passed: {result['passed_rules']}/{result['total_rules']} rules satisfied")
         return {
             "status": "passed",
@@ -162,7 +199,12 @@ def create_health_pipeline():
         facts = {'affiliates': fact_aff, 'capacity': fact_cap}
         
         export_to_csv(dimensions, facts)
-        
+        audit.log_step(
+            _audit_run_id(), 'TRANSFORM', 'build_dimensions_and_facts', 'SUCCESS',
+            rows_out=len(fact_aff) + len(fact_cap),
+            message=f"dim_geografia={len(dim_geo)}, fact_affiliates={len(fact_aff)}, fact_capacity={len(fact_cap)}"
+        )
+
         log.info(f"Transformation complete. Facts: {len(fact_aff)} affiliates, {len(fact_cap)} capacity records")
         return {
             "status": "transformed",
@@ -195,7 +237,17 @@ def create_health_pipeline():
         dimensions = {'time': dim_time, 'geografia': dim_geo, 'regime': dim_reg, 'facility': dim_fac, 'capacity_type': dim_ct}
         facts = {'affiliates': fact_aff, 'capacity': fact_cap}
         
-        result = validate_prepared_data(dimensions, facts, raw_total_persons=raw_total, simulate_failure=None)
+        run_id = _audit_run_id()
+        try:
+            result = validate_prepared_data(dimensions, facts, raw_total_persons=raw_total, simulate_failure=None)
+        except CriticalQualityError as cqe:
+            audit.log_dq_results(run_id, cqe.details)
+            audit.log_step(run_id, 'VALIDATE', 'gate_3_prepared', 'FAILED', message=str(cqe))
+            audit.finish_run(run_id, audit.STATUS_BLOCKED, stage_reached='VALIDATE', error_message=str(cqe))
+            raise
+        audit.log_dq_results(run_id, result)
+        audit.log_step(run_id, 'VALIDATE', 'gate_3_prepared', 'SUCCESS',
+                       message=f"{result['passed_rules']}/{result['total_rules']} rules")
         log.info(f"Gate 3 passed: {result['passed_rules']}/{result['total_rules']} rules satisfied")
         return {
             "status": "passed",
@@ -225,12 +277,23 @@ def create_health_pipeline():
         dimensions = {'time': dim_time, 'geografia': dim_geo, 'regime': dim_reg, 'facility': dim_fac, 'capacity_type': dim_ct}
         facts = {'affiliates': fact_aff, 'capacity': fact_cap}
         
-        load_all(dimensions, facts)
+        load_all(dimensions, facts, run_id=_audit_run_id())
+        rows_loaded = {
+            'dim_time': len(dim_time), 'dim_geografia': len(dim_geo),
+            'dim_regime': len(dim_reg), 'dim_facility': len(dim_fac),
+            'dim_capacity_type': len(dim_ct),
+            'fact_affiliates': len(fact_aff), 'fact_facility_capacity': len(fact_cap),
+        }
+        run_id = _audit_run_id()
+        audit.log_step(run_id, 'LOAD', 'load_dimensional_dw', 'SUCCESS',
+                       rows_out=sum(rows_loaded.values()))
         log.info("Data Warehouse dimensional load completed successfully.")
         return {
             "status": "loaded",
             "loaded_at": datetime.now(timezone.utc).isoformat(),
-            "target": "salud_colombia"
+            "target": "salud_colombia",
+            "audit_run_id": run_id,
+            "rows_loaded": rows_loaded
         }
 
     @task(task_id="verify_dw_and_kpis")
@@ -247,15 +310,26 @@ def create_health_pipeline():
                 r7_count, r7_avg_beds = cur.fetchone()
                 
             log.info(f"R6 View check: {r6_count} departments, average coverage: {r6_avg_cov}%")
-            log.info(f"R7 View check: {r7_count} departments, average beds/1k hab: {r7_avg_beds}")
-            
+            log.info(f"R7 View check: {r7_count} departments, average beds/1k hab: {r7_avg_beds}%")
+
+            run_id = _audit_run_id()
+            audit.log_step(run_id, 'VERIFY', 'verify_dw_and_kpis', 'SUCCESS',
+                           message=f"r6_departments={r6_count}, r7_departments={r7_count}")
+            audit.finish_run(run_id, audit.STATUS_SUCCESS, stage_reached='VERIFY',
+                             rows_loaded=load_res.get('rows_loaded'))
+
             return {
                 "status": "verified",
                 "r6_departments": r6_count,
                 "r6_avg_coverage_pct": float(r6_avg_cov) if r6_avg_cov else 0.0,
                 "r7_departments": r7_count,
-                "r7_avg_beds_per_1000": float(r7_avg_beds) if r7_avg_beds else 0.0
+                "r7_avg_beds_per_1000": float(r7_avg_beds) if r7_avg_beds else 0.0,
+                "audit_run_id": run_id
             }
+        except Exception as e:
+            run_id = _audit_run_id()
+            audit.finish_run(run_id, audit.STATUS_FAILED, stage_reached='VERIFY', error_message=str(e))
+            raise
         finally:
             conn.close()
 
@@ -287,18 +361,3 @@ def reliable_health_pipeline():
 
 dag_reliable = reliable_health_pipeline()
 
-
-# Alias DAG for backward compatibility
-@dag(
-    dag_id="etl_ods3_salud_colombia",
-    default_args=DEFAULT_ARGS,
-    description="Pipeline Principal Salud Colombia ODS 3 (Conforme con Great Expectations)",
-    schedule=None,
-    start_date=datetime(2026, 1, 1),
-    catchup=False,
-    tags=["etl", "ods3", "salud", "gx", "airflow3"]
-)
-def etl_ods3_salud_colombia_dag():
-    create_health_pipeline()
-
-dag_alias = etl_ods3_salud_colombia_dag()

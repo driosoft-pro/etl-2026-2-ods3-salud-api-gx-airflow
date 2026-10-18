@@ -27,7 +27,7 @@ cookie_jar = CookieJar()
 opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
 
 
-def request_json(method: str, path: str, payload: dict = None, token: str = None) -> tuple[int, dict]:
+def request_json(method: str, path: str, payload: dict = None, token: str = None, csrf: str = None) -> tuple[int, dict]:
     url = f"{SUPERSET_URL}{path}"
     data = json.dumps(payload).encode("utf-8") if payload else None
     req = urllib.request.Request(url, data=data, method=method)
@@ -35,11 +35,17 @@ def request_json(method: str, path: str, payload: dict = None, token: str = None
     req.add_header("Accept", "application/json")
     if token:
         req.add_header("Authorization", f"Bearer {token}")
+    if csrf:
+        req.add_header("X-CSRFToken", csrf)
 
     try:
         with opener.open(req, timeout=30) as resp:
             body = resp.read().decode("utf-8")
-            return resp.status, json.loads(body) if body else {}
+            try:
+                data = json.loads(body) if body else {}
+            except Exception:
+                data = {"raw": body}
+            return resp.status, data
     except urllib.error.HTTPError as e:
         err_body = e.read().decode("utf-8") if e.fp else ""
         try:
@@ -108,14 +114,14 @@ def ensure_database(token: str, csrf: str) -> int:
         "allow_cvas": False,
         "allow_dml": False,
     }
-    status, res = request_json("POST", "/api/v1/database/", payload, token=token)
+    status, res = request_json("POST", "/api/v1/database/", payload, token=token, csrf=csrf)
     if status in (200, 201) and "id" in res:
         log.info(f"Database registered successfully (id={res['id']}).")
         return res["id"]
     raise RuntimeError(f"Failed to register database: {res}")
 
 
-def ensure_dataset(token: str, db_id: int, table_name: str, schema: str = "public") -> int:
+def ensure_dataset(token: str, db_id: int, table_name: str, schema: str = "public", csrf: str = None) -> int:
     log.info(f"Checking dataset '{table_name}'...")
     status, res = request_json("GET", f"/api/v1/dataset/?q=(filters:[{{col:table_name,opr:eq,value:{table_name}}}])", token=token)
     if status == 200 and "result" in res and len(res["result"]) > 0:
@@ -129,7 +135,7 @@ def ensure_dataset(token: str, db_id: int, table_name: str, schema: str = "publi
         "schema": schema,
         "table_name": table_name,
     }
-    status, res = request_json("POST", "/api/v1/dataset/", payload, token=token)
+    status, res = request_json("POST", "/api/v1/dataset/", payload, token=token, csrf=csrf)
     if status in (200, 201) and "id" in res:
         log.info(f"Dataset '{table_name}' created (id={res['id']}).")
         return res["id"]
@@ -137,7 +143,7 @@ def ensure_dataset(token: str, db_id: int, table_name: str, schema: str = "publi
     return 0
 
 
-def ensure_dashboard(token: str, title: str, slug: str) -> int:
+def ensure_dashboard(token: str, title: str, slug: str, csrf: str = None) -> int:
     log.info(f"Checking dashboard '{title}'...")
     status, res = request_json("GET", f"/api/v1/dashboard/?q=(filters:[{{col:slug,opr:eq,value:{slug}}}])", token=token)
     if status == 200 and "result" in res and len(res["result"]) > 0:
@@ -150,7 +156,7 @@ def ensure_dashboard(token: str, title: str, slug: str) -> int:
         "slug": slug,
         "published": True,
     }
-    status, res = request_json("POST", "/api/v1/dashboard/", payload, token=token)
+    status, res = request_json("POST", "/api/v1/dashboard/", payload, token=token, csrf=csrf)
     if status in (200, 201) and "id" in res:
         log.info(f"Dashboard '{title}' created (id={res['id']}).")
         return res["id"]
@@ -180,13 +186,14 @@ def main():
 
         ds_map = {}
         for ds in datasets:
-            ds_id = ensure_dataset(token, db_id, ds)
+            ds_id = ensure_dataset(token, db_id, ds, csrf=csrf)
             ds_map[ds] = ds_id
 
         dash_id = ensure_dashboard(
             token,
             "ODS 3 - Salud Colombia: Disparidades y Cobertura Territorial (R1–R7)",
-            "ods3-salud-colombia"
+            "ods3-salud-colombia",
+            csrf=csrf
         )
 
         log.info("=" * 60)

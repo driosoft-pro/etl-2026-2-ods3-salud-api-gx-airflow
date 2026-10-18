@@ -16,6 +16,12 @@ Un pipeline por lotes de estilo producción, con la confiabilidad como primera p
 8. [Diseño de Validación con Great Expectations](#8-diseño-de-validación-con-great-expectations)
 9. [Estrategia de Transformación y Contrato de Integración DANE](#9-estrategia-de-transformación-y-contrato-de-integración-dane)
 10. [Modelo Dimensional Conforme (Data Warehouse)](#10-modelo-dimensional-conforme-data-warehouse)
+    - [10.1 Metodología de Diseño](#101-metodología-de-diseño)
+    - [10.2 Diagrama Entity-Relational del Esquema en Estrella](#102-diagrama-entity-relational-del-esquema-en-estrella)
+    - [10.3 Catálogo de Tablas y Vistas](#103-catálogo-de-tablas-y-vistas)
+    - [10.4 Separación de Bases de Datos (Ajuste de Infraestructura)](#104-separación-de-bases-de-datos-ajuste-de-infraestructura)
+    - [10.5 Trazabilidad del ETL (Esquema `audit`)](#105-trazabilidad-del-etl-esquema-audit)
+    - [10.6 Reglas de Evolución del Modelo (Cómo Crecer Sin Romper)](#106-reglas-de-evolución-del-modelo-cómo-crecer-sin-romper)
 11. [Orquestación y Políticas de Reintento con Apache Airflow 3.1.8](#11-orquestación-y-políticas-de-reintento-con-apache-airflow-318)
 12. [Pruebas Obligatorias de Confiabilidad (Tests A, B y C)](#12-pruebas-obligatorias-de-confiabilidad-tests-a-b-y-c)
 13. [Capa de Consumo y Business Intelligence (PostgREST, Power BI, Superset)](#13-capa-de-consumo-y-business-intelligence-postgrest-power-bi-superset)
@@ -135,7 +141,7 @@ flowchart TD
     end
 
     subgraph Orchestration [Apache Airflow 3.1.8 TaskFlow]
-        DAG["DAG: etl_ods3_salud_colombia\n8 Tareas Consecutivas | Fallo Inmediato retries=0"]
+        DAG["DAG: reliable_health_pipeline\n8 Tareas Consecutivas | Fallo Inmediato retries=0"]
     end
 
     subgraph BI [Capa de Consumo y Business Intelligence Dual]
@@ -222,19 +228,165 @@ El framework de validación opera mediante tres compuertas desacopladas en `src/
 
 ## 10. Modelo Dimensional Conforme (Data Warehouse)
 
-El almacén implementa un **Esquema en Estrella Conforme (Conformed Star Schema)** en PostgreSQL 16:
+### 10.1 Metodología de Diseño
 
-- **`dim_time` (2 registros):** `sk_time` (PK), año, mes, trimestre, semestre, periodo código (`2022-Q2`, `2022-Q4`).
-- **`dim_geografia` (2.240 registros):** `sk_geografia` (PK), código DANE municipio, municipio, código DANE departamento, departamento, región natural, y enriquecimiento de API Colombia: `capital`, `surface` (km²), `population`, `municipalities_count`, `phone_prefix`, `region_api`.
-- **`dim_regime` (4 registros):** `sk_regime` (PK), código (`S`, `C`, `E`, `I`), descripción (`SUBSIDIZED`, `CONTRIBUTORY`, `SPECIAL`, `EXCEPTION`).
-- **`dim_facility` (10.921 registros):** `sk_facility` (PK), código de prestador, nombre, NIT, naturaleza jurídica, nivel de atención (1, 2, 3), dirección, `sk_geografia` (FK).
-- **`dim_capacity_type` (63 registros):** `sk_capacity_type` (PK), grupo de capacidad (`CAMAS`, `SALAS`, `CONSULTORIOS`, `AMBULANCIAS`, `CAMILLAS`), descripción detallada del servicio.
-- **`fact_affiliates` (3.369 filas):** `sk_affiliate` (PK), `sk_time` (FK), `sk_geografia` (FK), `sk_regime` (FK), `numero_afiliados` (Measure).
-- **`fact_facility_capacity` (31.496 filas):** `sk_capacity` (PK), `sk_time` (FK), `sk_facility` (FK), `sk_capacity_type` (FK), `sk_geografia` (FK), `capacity_amount` (Measure).
+El almacén sigue la metodología **Kimball Dimensional Modeling** con estas reglas fijas:
+
+1. **Grano declarado primero:** cada hecho declara su grano antes de existir (ver sección 2). `fact_affiliates` = *trimestre × municipio × régimen*; `fact_facility_capacity` = *sede IPS × tipo de capacidad × trimestre (stock Q4 2022)*.
+2. **Dimensiones conformed (conformes):** `dim_geografia` y `dim_time` son compartidas por ambos hechos. No existen copias geográficas por hecho; si un atributo cambia, cambia para todos los hechos a la vez.
+3. **Separación stock vs flujo:** los afiliados son un *flujo* (aditivo por sumas); la capacidad instalada es un *stock* (no aditivo en el tiempo). Esto se declara en el DDL con `COMMENT ON TABLE`.
+4. **Convención de nombres:** `dim_*` (dimensiones), `fact_*` (hechos), `v_*` (vistas analíticas), `audit.*` (trazabilidad del ETL). Claves subrogadas `sk_*` (`SERIAL`), nunca claves naturales en los hechos.
+5. **Evolución aditiva:** para cubrir un requerimiento nuevo, se agrega una columna o una tabla **nueva**. Jamás se renombran ni eliminan columnas ya publicadas (los dashboards de Superset/Power BI y las vistas R1–R7 dependen del contrato actual).
+
+### 10.2 Diagrama Entity-Relational del Esquema en Estrella
+
+Fuente editable: [`diagrams/star_schema.mmd`](diagrams/star_schema.mmd). También está disponible como imagen en [`diagrams/starShema.png`](diagrams/starShema.png).
+
+```mermaid
+erDiagram
+    dim_time ||--o{ fact_affiliates : "sk_time"
+    dim_geografia ||--o{ fact_affiliates : "sk_geografia"
+    dim_regime ||--o{ fact_affiliates : "sk_regime"
+    dim_time ||--o{ fact_facility_capacity : "sk_time"
+    dim_facility ||--o{ fact_facility_capacity : "sk_facility"
+    dim_capacity_type ||--o{ fact_facility_capacity : "sk_capacity_type"
+    dim_geografia ||--o{ fact_facility_capacity : "sk_geografia"
+    dim_geografia ||--o{ dim_facility : "sk_geografia"
+
+    dim_time {
+        serial sk_time PK
+        int year
+        int quarter
+        varchar periodo_codigo
+    }
+    dim_geografia {
+        serial sk_geografia PK
+        varchar codigo_dane_municipio UK
+        varchar municipio
+        varchar codigo_dane_depto
+        varchar departamento
+        varchar region
+        numeric surface
+        bigint population
+    }
+    dim_regime {
+        serial sk_regime PK
+        varchar code UK
+        varchar description
+    }
+    dim_facility {
+        serial sk_facility PK
+        varchar provider_code
+        varchar name
+        varchar nature
+        int care_level
+        int sk_geografia FK
+    }
+    dim_capacity_type {
+        serial sk_capacity_type PK
+        varchar group
+        varchar description
+    }
+    fact_affiliates {
+        serial sk_affiliate PK
+        int sk_time FK
+        int sk_geografia FK
+        int sk_regime FK
+        bigint numero_afiliados
+    }
+    fact_facility_capacity {
+        serial sk_capacity PK
+        int sk_time FK
+        int sk_facility FK
+        int sk_capacity_type FK
+        int sk_geografia FK
+        int capacity_amount
+    }
+```
+
+### 10.3 Catálogo de Tablas y Vistas
+
+El almacén implementa un **Esquema en Estrella Conforme (Conformed Star Schema)** en PostgreSQL 16. Todas las dimensiones y hechos incluyen `batch_id BIGINT` (FK a `audit.etl_batch_log`) como columna de procedencia de la fila:
+
+- **`dim_time` (2 registros):** `sk_time` (PK), año, mes, trimestre, semestre, periodo código (`2022-Q2`, `2022-Q4`), `batch_id` (FK).
+- **`dim_geografia` (2.240 registros):** `sk_geografia` (PK), código DANE municipio, municipio, código DANE departamento, departamento, región natural, y enriquecimiento de API Colombia: `capital`, `surface` (km²), `population`, `municipalities_count`, `phone_prefix`, `region_api`, `batch_id` (FK).
+- **`dim_regime` (4 registros):** `sk_regime` (PK), código (`S`, `C`, `E`, `I`), descripción (`SUBSIDIZED`, `CONTRIBUTORY`, `SPECIAL`, `EXCEPTION`), `batch_id` (FK).
+- **`dim_facility` (10.921 registros):** `sk_facility` (PK), código de prestador, nombre, NIT, naturaleza jurídica, nivel de atención (1, 2, 3), dirección, `sk_geografia` (FK), `batch_id` (FK).
+- **`dim_capacity_type` (63 registros):** `sk_capacity_type` (PK), grupo de capacidad (`CAMAS`, `SALAS`, `CONSULTORIOS`, `AMBULANCIAS`, `CAMILLAS`), descripción detallada del servicio, `batch_id` (FK).
+- **`fact_affiliates` (3.369 filas):** `sk_affiliate` (PK), `sk_time` (FK), `sk_geografia` (FK), `sk_regime` (FK), `numero_afiliados` (Measure), `batch_id` (FK).
+- **`fact_facility_capacity` (31.496 filas):** `sk_capacity` (PK), `sk_time` (FK), `sk_facility` (FK), `sk_capacity_type` (FK), `sk_geografia` (FK), `capacity_amount` (Measure), `batch_id` (FK).
 - **Vistas Analíticas:**
   - `v_r6_demographic_coverage`: Cruce directo de afiliados SGSSS con población censal oficial de API Colombia.
   - `v_r7_territorial_capacity`: Cálculo de camas hospitalarias por cada 1.000 habitantes y densidad física por km².
   - `v_affiliates_summary` & `v_facility_summary`: Vistas desnormalizadas optimizadas para consumo BI.
+
+### 10.4 Separación de Bases de Datos (Ajuste de Infraestructura)
+
+**Problema detectado:** los ~50 metadatos internos de Apache Airflow (`dag_run`, `task_instance`, `xcom`, ...) vivían en la **misma base `salud_colombia`** que el modelo dimensional. PostgREST, además, exponía el esquema `public` completo, exponiendo por REST tablas de orquestación que no son datos de negocio.
+
+**Ajuste aplicado:** cada sistema tiene su propia base de datos en el mismo servidor PostgreSQL 16:
+
+| Base de datos | Contenido | Consumidores |
+|---|---|---|
+| `salud_colombia` | Modelo dimensional (`public`) + trazabilidad ETL (`audit`) | ETL, PostgREST, Power BI, Superset, DBeaver |
+| `airflow_meta` | ~50 metadatos internos de Airflow | Únicamente los contenedores de Airflow |
+
+La creación de `airflow_meta` está automatizada en [`sql/initdb/00_create_databases.sql`](sql/initdb/00_create_databases.sql), que se ejecuta automáticamente en el primer arranque del volumen de PostgreSQL (vía `/docker-entrypoint-initdb.d`). PostgREST sigue exponiendo **solo** el esquema `public` de `salud_colombia`: el esquema `audit` no es accesible vía REST.
+
+> **Nota de migración (instalaciones previas):** los scripts de `/docker-entrypoint-initdb.d` solo corren con el volumen vacío. Si el volumen `pgdata` ya existía, crear la base una sola vez y reiniciar Airflow:
+> ```bash
+> docker compose exec postgres psql -U etl_user -d postgres -c "CREATE DATABASE airflow_meta OWNER etl_user;"
+> docker compose rm -sf airflow-init airflow-webserver airflow-scheduler airflow-dag-processor
+> docker compose up -d airflow-init && docker compose up -d airflow-webserver airflow-scheduler airflow-dag-processor
+> ```
+> Si además quedaron tablas de Airflow dentro de `salud_colombia` (instalaciones antiguas), se eliminan con `DROP TABLE` (cascada) sobre las tablas que no sean `dim_*`/`fact_*`. El historial de corridas de Airflow en la UI se pierde al migrar (los logs de `./logs/` se conservan).
+
+### 10.5 Trazabilidad del ETL (Esquema `audit`)
+
+Cada corrida del pipeline (CLI o Airflow) deja registro persistente en cuatro tablas del esquema `audit`:
+
+| Tabla | Granularidad | Contenido |
+|---|---|---|
+| `audit.etl_run` | 1 fila por corrida | `status` (`SUCCESS`/`FAILED`/`BLOCKED_QUALITY`), etapa alcanzada, duración, conteos de filas cargadas (`rows_loaded` JSONB), resultado agregado DQ (`12/12`), mensaje de error |
+| `audit.etl_run_step` | 1 fila por fase/paso | Fases `EXTRACT`, `VALIDATE`, `TRANSFORM`, `LOAD`, `EXPORT`, `VERIFY` con `rows_in`/`rows_out` y mensaje |
+| `audit.dq_check_result` | 1 fila por regla DQ y corrida | Resultado `PASS`/`FAIL` de DQ-01..DQ-12 con el gate, severidad y detalles en JSONB |
+| `audit.etl_batch_log` | 1 fila por lote de carga al DW | `batch_id` (serial), corrida asociada (`run_id`), estrategia (`full_replace`), conteos de filas antes/después (`target_rows_before`/`target_rows_after` JSONB), duración y estado del lote |
+
+El `batch_id` de `audit.etl_batch_log` se **estampa en cada fila** de las 5 dimensiones y 2 hechos (`batch_id BIGINT` con FK), de modo que toda fila del DW lleva procedencia del lote que la cargó. La API está en [`src/audit.py`](src/audit.py) (`start_batch`/`finish_batch`) y `src/load.py` la invoca dentro de `load_all`. Es **defensiva por diseño**: si la base no está disponible, la auditoría emite un warning y el ETL continúa — la trazabilidad nunca rompe el pipeline.
+
+Consulta típica (últimas corridas y su estado):
+
+```sql
+SELECT run_id, run_type, status, stage_reached,
+       dq_rules_passed || '/' || dq_rules_total AS dq,
+       ROUND(duration_seconds, 1) AS dur_s
+FROM audit.etl_run
+ORDER BY started_at DESC
+LIMIT 10;
+```
+
+Consulta de lotes de carga (procedencia de las filas del DW):
+
+```sql
+SELECT batch_id, run_id, dag_id, status, strategy,
+       target_rows_after, ROUND(duration_seconds, 1) AS dur_s
+FROM audit.etl_batch_log
+ORDER BY started_at DESC
+LIMIT 10;
+```
+
+El historial de corridas **sobrevive** a los resets del modelo dimensional: `sql/init.sql` recrea las dimensiones y hechos pero usa `CREATE TABLE IF NOT EXISTS` sobre `audit.*` y jamás las elimina.
+
+### 10.6 Reglas de Evolución del Modelo (Cómo Crecer Sin Romper)
+
+Para un requerimiento analítico nuevo (por ejemplo, R8: afiliados por sexo y edad):
+
+1. **Declarar el grano** del nuevo hecho antes de escribir DDL.
+2. **Reutilizar dimensiones conformed** existentes (`dim_geografia`, `dim_time`) siempre que sea posible; crear una dimensión nueva solo si el concepto es genuinely nuevo.
+3. **Agregar** la tabla/columna en `sql/init.sql` (fuente única de verdad) — sin tocar el DDL de las tablas existentes.
+4. **Extender** el ETL con un `build_*` nuevo, sin modificar los `build_*` existentes salvo para alimentar la nueva dimensión desde cero.
+5. **Agreguar** la nueva regla de calidad al catálogo (`src/quality/rules.py`) y, si corresponde, una vista `v_r8_*`.
+6. **Actualizar** este README y el diagrama `diagrams/star_schema.mmd`.
 
 ---
 
@@ -295,7 +447,12 @@ La suite de confiabilidad vive en `scripts/run_reliability_tests.py` y se ejecut
 
 El Data Warehouse ofrece **dos canales de visualización**:
 1. **PostgREST (Puerto 3000):** Expone las tablas y vistas del DW mediante una API REST HTTP/JSON. Permite a Power BI Desktop en Windows o Linux conectarse nativamente mediante `Get Data` → `Web` sin configurar drivers ODBC ni exponer credenciales maestras.
-2. **Apache Superset (Puerto 8088):** Plataforma analítica web lista para producción. El script `scripts/superset_bootstrap.py` configura automáticamente la fuente de datos, datasets y el dashboard interactivo *ODS 3 - Salud Colombia: Disparidades y Cobertura Territorial (R1–R7)*.
+2. **Apache Superset (Puerto 8088):** Plataforma analítica web lista para producción. El bootstrap crea automáticamente la fuente de datos, datasets y **tres dashboards**:
+   - **Dashboard Ejecutivo (R1–R7):** *[ODS 3 - Salud Colombia: Disparidades y Cobertura Territorial](http://localhost:8088/superset/dashboard/ods3-salud-colombia/)* — KPIs y charts de cobertura, capacidad y disparidades (`scripts/dashboard/workshop.py`).
+   - **Dashboard de Requerimientos (explorador con tabs):** *[ODS 3 · Requerimientos R1–R7](http://localhost:8088/superset/dashboard/ods3-requerimientos/)* — una pestaña por requerimiento (R1..R7) con descripción + SQL del requerimiento, chart principal, tabla de detalle y filtros nativos compartidos (régimen, región, departamento, categoría de cobertura y nivel de alerta) (`scripts/dashboard/requirements.py`).
+   - **Dashboard de Granularidad y Calidad:** *[Granularidad & Calidad del DW](http://localhost:8088/superset/dashboard/ods3-granularity/)* — auditoría del modelo dimensional: grano por tabla, lotes de carga (`audit.etl_batch_log` + `batch_id`), historial de corridas ETL y resultado de reglas DQ-01..DQ-12 (`scripts/dashboard/granularity.py`).
+
+Las definiciones de charts, layout (incl. tabs), filtros nativos y estilos de los tres dashboards viven en [`scripts/dashboard/`](scripts/dashboard/) (`common.py`, `workshop.py`, `requirements.py`, `granularity.py`) y se aplican de forma idempotente vía la API de Superset.
 
 ---
 
@@ -329,7 +486,7 @@ El Data Warehouse ofrece **dos canales de visualización**:
 ./run.sh clean-data      # Limpia datos intermedios y de salida (data/work, output)
 ./run.sh clean           # Alias de clean-all
 ./run.sh reset           # Alias de clean-all
-./run.sh trigger         # Dispara el DAG Test A (8/8 success en etl_ods3_salud_colombia)
+./run.sh trigger         # Dispara el DAG Test A (8/8 success en reliable_health_pipeline)
 ./run.sh trigger-bad     # Dispara el DAG Test B (falla controlada DQ-02: bloqueo en Gate 1)
 ./run.sh validate        # Reporte automatizado de confiabilidad (Tests A, B y C)
 ./run.sh test            # Ejecuta pytest completo (unidad + integración)
@@ -340,6 +497,7 @@ El Data Warehouse ofrece **dos canales de visualización**:
 ./run.sh smoke           # Pipeline local/contenedor sin Airflow (ejecución directa)
 ./run.sh postgrest-test  # Prueba de conectividad REST a PostgREST
 ./run.sh psql            # Abre consola interactiva psql en el DW salud_colombia
+./run.sh audit           # Reporte de las últimas corridas ETL (esquema audit, ver 10.5)
 ```
 
 En Windows: `run.bat up`, `run.bat ports`, `run.bat test`, `run.bat trigger`, etc. Los scripts detectan automáticamente si existe `podman compose`, `podman-compose` o `docker compose`.
@@ -392,7 +550,13 @@ SELECT count(*) FROM dim_geografia;           -- Debe devolver 2240
 SELECT departamento, cobertura_afiliacion_pct, brecha_poblacional_no_afiliada
 FROM v_r6_demographic_coverage
 ORDER BY cobertura_afiliacion_pct DESC LIMIT 5;
+
+-- Trazabilidad del ETL (ver sección 10.5)
+SELECT run_id, status, stage_reached, dq_rules_passed, dq_rules_total
+FROM audit.etl_run ORDER BY started_at DESC LIMIT 5;
 ```
+
+> **Nota (sección 10.4):** `salud_colombia` contiene únicamente el modelo dimensional y el esquema `audit`. Los metadatos de Airflow viven en una base separada (`airflow_meta`) y **no** deben consultarse desde aquí.
 
 ---
 
@@ -422,7 +586,7 @@ docker compose up -d airflow-init && docker compose up -d airflow-webserver airf
 docker compose run --rm superset-bootstrap python /app/scripts/superset_bootstrap.py
 
 # 4. Disparar DAG en Airflow
-docker compose exec -T airflow-webserver airflow dags trigger etl_ods3_salud_colombia
+docker compose exec -T airflow-webserver airflow dags trigger reliable_health_pipeline
 ```
 
 ---
@@ -465,7 +629,8 @@ Activities/5/
 |   |-- extract.py             # Extracción de datasets primarios (CSV)
 |   |-- api_extract.py         # Extracción de API Colombia con reintentos y caché
 |   |-- transform.py           # Transformación, contratos DANE y claves subrogadas
-|   |-- load.py                # Carga dimensional idempotente a PostgreSQL y CSV
+|   |-- load.py                # Carga dimensional idempotente a PostgreSQL y CSV (estampa batch_id)
+|   |-- audit.py               # Trazabilidad ETL: audit.etl_run / etl_run_step / dq_check_result / etl_batch_log
 |   |-- profile_data.py        # Perfilamiento automatizado de fuentes
 |   |-- etl_main.py            # CLI unificado del pipeline por lotes
 |   `-- quality/
@@ -473,11 +638,23 @@ Activities/5/
 |       `-- gx_validator.py    # Implementación de las 3 compuertas con Great Expectations
 |-- tests/                     # Suite de pruebas unitarias e integración con pytest
 |-- sql/
-|   |-- init.sql               # DDL del Data Warehouse dimensional (tablas, PKs, FKs, vistas)
+|   |-- init.sql               # DDL del DW dimensional + vistas + esquema audit (fuente única de verdad)
+|   |-- initdb/
+|   |   `-- 00_create_databases.sql # Crea airflow_meta en el primer arranque de PostgreSQL
 |   `-- analytical_queries.sql # Consultas SQL analíticas para R1 a R7
+|-- diagrams/
+|   |-- star_schema.mmd        # Diagrama ER del esquema en estrella (fuente Mermaid)
+|   |-- starShema.png          # Diagrama del esquema en estrella (imagen)
+|   `-- systemArchitecture.png # Diagrama de arquitectura del sistema
 |-- scripts/
 |   |-- run_reliability_tests.py # Ejecutor de Tests A, B y C de confiabilidad
-|   `-- superset_bootstrap.py    # Registro automatizado de fuentes y dashboards en Superset
+|   |-- superset_bootstrap.py    # Registro de conexión DW, datasets y dashboard base
+|   |-- superset_charts_bootstrap.py # Charts R1-R7 y layout del dashboard ejecutivo
+|   `-- dashboard/
+|       |-- common.py            # Cliente API Superset + helpers de charts/layout/filtros
+|       |-- workshop.py          # Dashboard Ejecutivo R1-R7 (KPIs, charts, filtros, CSS)
+|       |-- requirements.py      # Dashboard explorador R1-R7 con tabs + filtros nativos
+|       `-- granularity.py       # Dashboard de Granularidad y Calidad del DW (audit, batch_id, DQ)
 |-- docs/
 |   |-- powerbi_postgrest_guide.md # Guía paso a paso para Power BI con PostgREST
 |   `-- evidence/

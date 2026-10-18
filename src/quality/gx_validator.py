@@ -15,12 +15,25 @@ logger = logging.getLogger(__name__)
 
 EVIDENCE_DIR = os.getenv('GX_EVIDENCE_DIR', os.path.join(os.path.dirname(__file__), '..', '..', 'docs', 'evidence', 'gx'))
 
+def _json_default(obj):
+    """Convierte tipos numpy a primitivos de Python para la serialización de evidencia."""
+    import numpy as np
+    if isinstance(obj, np.integer):
+        return int(obj)
+    if isinstance(obj, np.floating):
+        return float(obj)
+    if isinstance(obj, np.bool_):
+        return bool(obj)
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
+
 def _persist_evidence(gate_name: str, payload: dict):
     try:
         os.makedirs(EVIDENCE_DIR, exist_ok=True)
         path = os.path.join(EVIDENCE_DIR, f"{gate_name}_results.json")
         with open(path, 'w', encoding='utf-8') as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
+            json.dump(payload, f, ensure_ascii=False, indent=2, default=_json_default)
         logger.info(f"Persisted validation evidence to: {path}")
     except Exception as e:
         logger.warning(f"Could not persist validation evidence to {EVIDENCE_DIR}: {e}")

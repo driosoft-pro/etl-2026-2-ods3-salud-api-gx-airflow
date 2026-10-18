@@ -1,0 +1,110 @@
+---
+title: Health Colombia ODS 3 — Modelo Dimensional (Esquema en Estrella Conforme)
+---
+erDiagram
+    dim_time {
+        serial sk_time PK
+        int year
+        int month
+        varchar month_name
+        int quarter
+        int semester
+        varchar periodo_codigo
+        date full_date
+        bigint batch_id FK
+    }
+
+    dim_geografia {
+        serial sk_geografia PK
+        varchar codigo_dane_municipio UK
+        varchar municipio
+        varchar codigo_dane_depto
+        varchar departamento
+        varchar region
+        varchar capital
+        numeric surface
+        bigint population
+        int municipalities_count
+        varchar phone_prefix
+        varchar region_api
+        bigint batch_id FK
+    }
+
+    dim_regime {
+        serial sk_regime PK
+        varchar code UK
+        varchar description
+        bigint batch_id FK
+    }
+
+    dim_facility {
+        serial sk_facility PK
+        varchar provider_code
+        varchar name
+        varchar nit
+        varchar nature
+        int care_level
+        varchar manager
+        varchar address
+        varchar email
+        varchar phone
+        int sk_geografia FK
+        bigint batch_id FK
+    }
+
+    dim_capacity_type {
+        serial sk_capacity_type PK
+        varchar group
+        varchar description
+        bigint batch_id FK
+    }
+
+    fact_affiliates {
+        serial sk_affiliate PK
+        int sk_time FK
+        int sk_geografia FK
+        int sk_regime FK
+        bigint numero_afiliados
+        bigint batch_id FK
+    }
+
+    fact_facility_capacity {
+        serial sk_capacity PK
+        int sk_time FK
+        int sk_facility FK
+        int sk_capacity_type FK
+        int sk_geografia FK
+        int capacity_amount
+        bigint batch_id FK
+    }
+
+    etl_batch_log {
+        serial batch_id PK
+        bigint run_id FK
+        varchar dag_id
+        varchar strategy
+        jsonb target_rows_before
+        jsonb target_rows_after
+        varchar status
+        timestamptz started_at
+        timestamptz finished_at
+    }
+
+    dim_time ||--o{ fact_affiliates : "sk_time"
+    dim_geografia ||--o{ fact_affiliates : "sk_geografia"
+    dim_regime ||--o{ fact_affiliates : "sk_regime"
+
+    dim_time ||--o{ fact_facility_capacity : "sk_time"
+    dim_facility ||--o{ fact_facility_capacity : "sk_facility"
+    dim_capacity_type ||--o{ fact_facility_capacity : "sk_capacity_type"
+    dim_geografia ||--o{ fact_facility_capacity : "sk_geografia"
+
+    dim_geografia ||--o{ dim_facility : "sk_geografia"
+
+    etl_batch_log ||--o{ dim_time : "batch_id"
+    etl_batch_log ||--o{ dim_geografia : "batch_id"
+    etl_batch_log ||--o{ dim_regime : "batch_id"
+    etl_batch_log ||--o{ dim_facility : "batch_id"
+    etl_batch_log ||--o{ dim_capacity_type : "batch_id"
+    etl_batch_log ||--o{ fact_affiliates : "batch_id"
+    etl_batch_log ||--o{ fact_facility_capacity : "batch_id"

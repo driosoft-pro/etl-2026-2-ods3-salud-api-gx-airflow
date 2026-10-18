@@ -38,6 +38,7 @@ if "%1"=="test-unit" goto test_unit
 if "%1"=="status" goto status
 if "%1"=="logs" goto logs
 if "%1"=="ports" goto ports
+if "%1"=="audit" goto audit
 
 :usage
 echo Uso: run.bat [COMANDO]
@@ -58,6 +59,7 @@ echo   postgrest-test    Probar endpoints PostgREST
 echo   test / unit       Ejecutar pruebas unitarias
 echo   status            Estado de los contenedores
 echo   logs              Ver logs de Airflow
+echo   audit             Reporte de las ultimas corridas ETL (esquema audit)
 goto end
 
 :up
@@ -127,6 +129,9 @@ goto end
 
 :superset_init
 %COMPOSE_CMD% run --rm superset-bootstrap python /app/scripts/superset_bootstrap.py
+%COMPOSE_CMD% run --rm superset-bootstrap python /app/scripts/dashboard/granularity.py
+%COMPOSE_CMD% run --rm superset-bootstrap python /app/scripts/dashboard/workshop.py
+%COMPOSE_CMD% run --rm superset-bootstrap python /app/scripts/dashboard/requirements.py
 goto end
 
 :postgrest_test
@@ -143,6 +148,11 @@ goto end
 
 :logs
 %COMPOSE_CMD% logs -f airflow-scheduler airflow-webserver
+goto end
+
+:audit
+%COMPOSE_CMD% exec -T postgres psql -U etl_user -d salud_colombia -c "SELECT run_id, run_type, status, stage_reached, dq_rules_passed || '/' || dq_rules_total AS dq, ROUND(duration_seconds,1) AS dur_s, started_at FROM audit.etl_run ORDER BY started_at DESC LIMIT 10;"
+%COMPOSE_CMD% exec -T postgres psql -U etl_user -d salud_colombia -c "SELECT batch_id, run_id, dag_id, status, strategy, target_rows_after, ROUND(duration_seconds,1) AS dur_s, started_at FROM audit.etl_batch_log ORDER BY started_at DESC LIMIT 10;"
 goto end
 
 :end

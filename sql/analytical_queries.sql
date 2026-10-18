@@ -229,3 +229,83 @@ ORDER BY camas_por_1000_habitantes DESC;
 SELECT * FROM v_r6_demographic_coverage LIMIT 10;
 SELECT * FROM v_r7_territorial_capacity LIMIT 10;
 
+
+-- =====================================================
+-- AUDIT: Trazabilidad del ETL (esquema audit — ver README 10.5)
+-- =====================================================
+
+-- Últimas corridas con su estado final y resultado de compuertas DQ
+SELECT
+    run_id,
+    run_type,
+    dag_id,
+    status,
+    stage_reached,
+    dq_rules_passed || '/' || dq_rules_total AS dq_rules,
+    ROUND(duration_seconds, 1) AS duration_seconds,
+    started_at,
+    finished_at
+FROM audit.etl_run
+ORDER BY started_at DESC
+LIMIT 10;
+
+-- Pasos de la corrida más reciente
+SELECT s.phase, s.step_name, s.status, s.rows_in, s.rows_out, s.message
+FROM audit.etl_run_step s
+JOIN audit.etl_run r ON s.run_id = r.run_id
+WHERE r.run_id = (SELECT MAX(run_id) FROM audit.etl_run)
+ORDER BY s.step_id;
+
+-- Reglas DQ fallidas históricas (control de calidad del pipeline)
+SELECT r.run_id, r.started_at, d.rule_id, d.gate, d.severity, d.observed_value
+FROM audit.dq_check_result d
+JOIN audit.etl_run r ON d.run_id = r.run_id
+WHERE d.status = 'FAIL'
+ORDER BY r.started_at DESC;
+
+-- Tasa de éxito de las corridas por tipo
+SELECT
+    run_type,
+    COUNT(*) AS total_runs,
+    COUNT(*) FILTER (WHERE status = 'SUCCESS') AS successful,
+    COUNT(*) FILTER (WHERE status = 'BLOCKED_QUALITY') AS blocked_by_quality,
+    COUNT(*) FILTER (WHERE status = 'FAILED') AS failed
+FROM audit.etl_run
+GROUP BY run_type
+ORDER BY run_type;
+
+-- Últimos lotes de carga al DW (procedencia batch_id en dim_* y fact_*)
+SELECT
+    batch_id,
+    run_id,
+    dag_id,
+    status,
+    strategy,
+    target_rows_before,
+    target_rows_after,
+    ROUND(duration_seconds, 1) AS duration_seconds,
+    started_at,
+    finished_at
+FROM audit.etl_batch_log
+ORDER BY started_at DESC
+LIMIT 10;
+
+-- Conteo de filas por batch_id en los hechos (verificación de procedencia)
+SELECT
+    f.batch_id,
+    COUNT(*) AS fact_affiliates_rows
+FROM fact_affiliates f
+GROUP BY f.batch_id
+ORDER BY f.batch_id DESC;
+
+-- Lote activo actual (toda fila vigente pertenece al último batch SUCCESS)
+SELECT
+    b.batch_id,
+    b.status,
+    b.started_at,
+    (SELECT COUNT(*) FROM fact_affiliates f WHERE f.batch_id = b.batch_id) AS affiliates_rows,
+    (SELECT COUNT(*) FROM fact_facility_capacity c WHERE c.batch_id = b.batch_id) AS capacity_rows
+FROM audit.etl_batch_log b
+WHERE b.status = 'SUCCESS'
+ORDER BY b.batch_id DESC
+LIMIT 1;

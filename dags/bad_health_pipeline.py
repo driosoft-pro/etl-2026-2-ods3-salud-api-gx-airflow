@@ -36,8 +36,25 @@ from src.quality import (
     CriticalQualityError
 )
 from src.load import load_all, export_to_csv, get_connection
+from src import audit
 
 log = logging.getLogger(__name__)
+
+
+def _audit_run_id() -> int | None:
+    """Registro idempotente de la corrida en audit.etl_run (clave = dag_run.run_id)."""
+    try:
+        context = get_current_context()
+        dag_run = context.get("dag_run")
+        return audit.ensure_run(
+            run_key=dag_run.run_id if dag_run else None,
+            run_type="AIRFLOW",
+            dag_id=context.get("dag").dag_id if context.get("dag") else None,
+            trigger_source="airflow_test_b",
+        )
+    except Exception as e:
+        log.warning(f"Audit: no se pudo obtener run_id de Airflow ({e})")
+        return None
 
 DEFAULT_ARGS = {
     "owner": "health-data-engineering",
@@ -99,12 +116,20 @@ def bad_health_pipeline():
         aff_df.loc[0, 'regime_id'] = 'INVALID_Z'
         
         # This call deterministically raises CriticalQualityError
-        validate_primary_raw(
-            aff_df,
-            raw_data['facilities'],
-            simulate_failure="DQ-02"
-        )
-        
+        run_id = _audit_run_id()
+        try:
+            validate_primary_raw(
+                aff_df,
+                raw_data['facilities'],
+                simulate_failure="DQ-02"
+            )
+        except CriticalQualityError as cqe:
+            audit.log_dq_results(run_id, cqe.details)
+            audit.log_step(run_id, 'VALIDATE', 'gate_1_primary_raw', 'FAILED', message=str(cqe))
+            audit.finish_run(run_id, audit.STATUS_BLOCKED, stage_reached='VALIDATE',
+                             error_message=str(cqe))
+            raise
+
         return {"status": "passed"}
 
     @task(task_id="validate_api_raw")

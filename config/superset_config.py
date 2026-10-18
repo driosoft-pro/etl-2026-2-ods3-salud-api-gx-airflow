@@ -19,5 +19,13 @@ ENABLE_PROXY_FIX = True
 ROW_LIMIT = 50000
 SUPERSET_WEBSERVER_PORT = 8088
 
-# Default language
-BABEL_DEFAULT_LOCALE = "es"
+# Default language.
+# NOTE: BABEL_DEFAULT_LOCALE must be "en" and LANGUAGES must be non-empty,
+# otherwise the SPA crashes on the login page (LanguagePicker reads
+# languages[locale].flag) and the frontend cannot fetch a language pack
+# (/superset/language_pack/<lang>/ requires auth and returns HTML on redirect).
+BABEL_DEFAULT_LOCALE = "en"
+LANGUAGES = {
+    "en": {"flag": "us", "name": "English"},
+    "es": {"flag": "es", "name": "Español"},
+}

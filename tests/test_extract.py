@@ -28,7 +28,7 @@ class TestExtractAffiliates:
     def test_string_types(self):
         df = extract_affiliates()
         for col in df.columns:
-            assert df[col].dtype == 'object', f"Column {col} must be string"
+            assert pd.api.types.is_string_dtype(df[col]), f"Column {col} must be string"
 
 
 @pytest.mark.unit

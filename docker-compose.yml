@@ -3,7 +3,8 @@
 # Compatible with Docker Compose and Podman Compose (Rootless mode)
 #
 # Services:
-#   1. postgres         -> PostgreSQL 16 Dimensional Data Warehouse (Port 5432)
+#   1. postgres         -> PostgreSQL 16: DW dimensional salud_colombia
+#                          + metadatos de Airflow en airflow_meta (Port 5432)
 #   2. postgrest        -> PostgREST API exposing DW to Power BI & Web clients (Port 3000)
 #   3. superset-init    -> One-off initialization for Apache Superset
 #   4. superset         -> Apache Superset BI platform for R1–R7 dashboards (Port 8088)
@@ -11,6 +12,7 @@
 #   6. airflow-init     -> One-off DB migrations and user setup for Airflow
 #   7. airflow-webserver-> Apache Airflow 3.1.8 Web UI (Port 8080)
 #   8. airflow-scheduler-> Apache Airflow 3.1.8 Scheduler
+#   8b. airflow-dag-processor -> Apache Airflow 3.1.8 DAG Processor (parseo de DAGs)
 #   9. etl              -> Standalone ETL executor container
 # ============================================================================
 
@@ -21,10 +23,24 @@ x-airflow-common: &airflow-common
   environment: &airflow-common-env
     HOME: /home/airflow
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
-    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    # Metadatos de Airflow en su PROPIA base (airflow_meta) para que la base
+    # del DW (salud_colombia) contenga solo el modelo dimensional.
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${AIRFLOW_DB:-airflow_meta}
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'false'
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+    AIRFLOW__WEBSERVER__SECRET_KEY: "${AIRFLOW_WEBSERVER_SECRET_KEY:-salud-colombia-airflow-secret-2026-secure}"
+    # Airflow 3: los task subprocess (dentro del scheduler con LocalExecutor)
+    # se comunican con la Execution API del api-server. Sin esto usan
+    # localhost:8080 y fallan con Connection refused.
+    AIRFLOW__API__BASE_URL: "http://airflow-webserver:8080"
+    AIRFLOW__API__SECRET_KEY: "${AIRFLOW_WEBSERVER_SECRET_KEY:-salud-colombia-airflow-secret-2026-secure}"
+    # Airflow 3: jwt_secret para la Execution API. Sin esto cada contenedor
+    # genera uno aleatorio y el scheduler/webserver no validan los tokens
+    # entre si ("Invalid auth token: Signature verification failed").
+    AIRFLOW__API_AUTH__JWT_SECRET: "${AIRFLOW_WEBSERVER_SECRET_KEY:-salud-colombia-airflow-secret-2026-secure}"
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: "airflow:Admin"
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: /opt/airflow/config/simple_auth_manager_passwords.json
     PYTHONPATH: /opt/airflow
     AIRFLOW_UID: "${AIRFLOW_UID:-0}"
     DB_HOST: postgres
@@ -53,6 +69,7 @@ services:
   postgres:
     image: docker.io/library/postgres:16
     container_name: warehouse_salud
+    userns_mode: "keep-id"
     env_file:
       - .env
     environment:
@@ -63,6 +80,10 @@ services:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      # Solo se ejecutan en el PRIMER arranque (volumen vacío):
+      #   00 -> crea la base airflow_meta (metadatos de Airflow)
+      #   01 -> crea el esquema dimensional + auditoría en salud_colombia
+      - ./sql/initdb/00_create_databases.sql:/docker-entrypoint-initdb.d/00_create_databases.sql:ro
       - ./sql/init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
@@ -78,6 +99,7 @@ services:
   postgrest:
     image: docker.io/postgrest/postgrest:latest
     container_name: postgrest_salud
+    userns_mode: "keep-id"
     env_file:
       - .env
     environment:
@@ -97,8 +119,11 @@ services:
   # 3. Apache Superset — BI Initialization (One-off)
   # --------------------------------------------------------------------------
   superset-init:
-    image: ${SUPERSET_IMAGE_NAME:-docker.io/apache/superset:6.1.0}
+    build:
+      context: .
+      dockerfile: Dockerfile.superset
     container_name: superset_init_salud
+    user: "0:0"
     env_file:
       - .env
     environment:
@@ -133,8 +158,11 @@ services:
   # 4. Apache Superset — Primary Web BI Platform (Port 8088)
   # --------------------------------------------------------------------------
   superset:
-    image: ${SUPERSET_IMAGE_NAME:-docker.io/apache/superset:6.1.0}
+    build:
+      context: .
+      dockerfile: Dockerfile.superset
     container_name: superset_salud
+    user: "0:0"
     env_file:
       - .env
     environment:
@@ -157,9 +185,12 @@ services:
   # 5. Superset Bootstrap — Automated dataset and dashboard creation
   # --------------------------------------------------------------------------
   superset-bootstrap:
-    image: ${SUPERSET_IMAGE_NAME:-docker.io/apache/superset:6.1.0}
+    build:
+      context: .
+      dockerfile: Dockerfile.superset
     profiles:
       - bootstrap
+    user: "0:0"
     env_file:
       - .env
     environment:
@@ -190,13 +221,6 @@ services:
         echo "Initializing Airflow metadata and directories..."
         mkdir -p /opt/airflow/{logs,dags,plugins,config,gx}
         airflow db migrate || airflow db init
-        airflow users create \
-          --username "${_AIRFLOW_WWW_USER_USERNAME:-admin}" \
-          --firstname Data \
-          --lastname Engineer \
-          --role Admin \
-          --email "admin@saludcolombia.gov.co" \
-          --password "${_AIRFLOW_WWW_USER_PASSWORD:-admin}" || true
         echo "Airflow initialization finished."
     depends_on:
       postgres:
@@ -209,7 +233,7 @@ services:
   airflow-webserver:
     <<: *airflow-common
     container_name: airflow_webserver_salud
-    command: webserver
+    command: api-server --port 8080 --host 0.0.0.0
     ports:
       - "${AIRFLOW_WEBSERVER_PORT:-8080}:8080"
     depends_on:
@@ -234,9 +258,29 @@ services:
     restart: always
 
   # --------------------------------------------------------------------------
+  # 8b. Apache Airflow 3.1.8 — DAG Processor
+  # En Airflow 3.x el parsing/registro de DAGs lo realiza este servicio
+  # dedicado (el scheduler ya no los parsea). Sin el, la UI no muestra DAGs.
+  # --------------------------------------------------------------------------
+  airflow-dag-processor:
+    <<: *airflow-common
+    container_name: airflow_dag_processor_salud
+    command: dag-processor
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    restart: always
+
+  # --------------------------------------------------------------------------
   # 9. Standalone Python ETL Executor
+  # Solo se ejecuta explicitamente via: podman-compose run --rm etl ...
+  # profiles evita que up/down lo toquen.
   # --------------------------------------------------------------------------
   etl:
+    profiles:
+      - tools
     build:
       context: .
       dockerfile: Dockerfile
@@ -257,6 +301,7 @@ services:
       - ./docs:/app/docs
       - ./gx:/app/gx
       - ./scripts:/app/scripts
+      - ./tests:/app/tests
     depends_on:
       postgres:
         condition: service_healthy

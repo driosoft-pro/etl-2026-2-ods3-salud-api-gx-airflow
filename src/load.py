@@ -3,6 +3,7 @@ import numpy as np
 import psycopg2
 from psycopg2.extras import execute_values
 from .config import DB_CONFIG
+from . import audit
 import logging
 import os
 
@@ -38,13 +39,34 @@ def reset_schema(conn):
         cursor.execute(sql)
     logger.info("Schema reset from init.sql")
 
-def load_dimension(conn, table_name: str, df: pd.DataFrame, pk_col: str):
+def _count_rows(conn, tables: list) -> dict:
+    """Cuenta filas de tablas existentes (las ausentes quedan en None)."""
+    counts = {}
+    with conn.cursor() as cursor:
+        cursor.execute("""
+            SELECT table_name FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = ANY(%s)
+        """, (tables,))
+        existing = {row[0] for row in cursor.fetchall()}
+        for table in tables:
+            if table not in existing:
+                counts[table] = None
+                continue
+            cursor.execute(f"SELECT COUNT(*) FROM {table}")
+            counts[table] = cursor.fetchone()[0]
+    return counts
+
+def load_dimension(conn, table_name: str, df: pd.DataFrame, pk_col: str,
+                   batch_id: int = None):
     logger.info(f"Loading dimension {table_name}: {len(df)} records")
     
     with conn.cursor() as cursor:
         columns = list(df.columns)
         quoted = [f'"{c}"' for c in columns]
         values = df[columns].values.tolist()
+        if batch_id is not None:
+            quoted.append('"batch_id"')
+            values = [row + [batch_id] for row in values]
         values = _convert_to_python_types(values)
         
         insert_sql = f"""
@@ -59,13 +81,17 @@ def load_dimension(conn, table_name: str, df: pd.DataFrame, pk_col: str):
     
     logger.info(f"Dimension {table_name} loaded successfully")
 
-def load_fact(conn, table_name: str, df: pd.DataFrame, pk_col: str):
+def load_fact(conn, table_name: str, df: pd.DataFrame, pk_col: str,
+              batch_id: int = None):
     logger.info(f"Loading fact table {table_name}: {len(df)} records")
     
     with conn.cursor() as cursor:
         columns = [c for c in df.columns if c != pk_col]
         quoted = [f'"{c}"' for c in columns]
         values = df[columns].values.tolist()
+        if batch_id is not None:
+            quoted.append('"batch_id"')
+            values = [row + [batch_id] for row in values]
         values = _convert_to_python_types(values)
         
         insert_sql = f"""
@@ -78,26 +104,35 @@ def load_fact(conn, table_name: str, df: pd.DataFrame, pk_col: str):
     
     logger.info(f"Fact table {table_name} loaded successfully")
 
-def load_all(dimensions: dict, facts: dict):
+def load_all(dimensions: dict, facts: dict, run_id: int = None):
     conn = get_connection()
+    tables = ['dim_time', 'dim_geografia', 'dim_regime', 'dim_facility',
+              'dim_capacity_type', 'fact_affiliates', 'fact_facility_capacity']
+    batch_id = None
 
     try:
+        rows_before = _count_rows(conn, tables)
         reset_schema(conn)
+        batch_id = audit.start_batch(run_id=run_id, target_rows_before=rows_before,
+                                     conn=conn)
 
-        load_dimension(conn, 'dim_time', dimensions['time'], 'sk_time')
-        load_dimension(conn, 'dim_geografia', dimensions['geografia'], 'sk_geografia')
-        load_dimension(conn, 'dim_regime', dimensions['regime'], 'sk_regime')
-        load_dimension(conn, 'dim_facility', dimensions['facility'], 'sk_facility')
-        load_dimension(conn, 'dim_capacity_type', dimensions['capacity_type'], 'sk_capacity_type')
+        load_dimension(conn, 'dim_time', dimensions['time'], 'sk_time', batch_id)
+        load_dimension(conn, 'dim_geografia', dimensions['geografia'], 'sk_geografia', batch_id)
+        load_dimension(conn, 'dim_regime', dimensions['regime'], 'sk_regime', batch_id)
+        load_dimension(conn, 'dim_facility', dimensions['facility'], 'sk_facility', batch_id)
+        load_dimension(conn, 'dim_capacity_type', dimensions['capacity_type'], 'sk_capacity_type', batch_id)
         
-        load_fact(conn, 'fact_affiliates', facts['affiliates'], 'sk_affiliate')
-        load_fact(conn, 'fact_facility_capacity', facts['capacity'], 'sk_capacity')
+        load_fact(conn, 'fact_affiliates', facts['affiliates'], 'sk_affiliate', batch_id)
+        load_fact(conn, 'fact_facility_capacity', facts['capacity'], 'sk_capacity', batch_id)
         
         conn.commit()
+        rows_after = _count_rows(conn, tables)
+        audit.finish_batch(batch_id, 'SUCCESS', target_rows_after=rows_after)
         logger.info("Load completed successfully")
         
     except Exception as e:
         conn.rollback()
+        audit.finish_batch(batch_id, 'FAILED', notes=str(e)[:500])
         logger.error(f"Error during load: {e}")
         raise
     finally:

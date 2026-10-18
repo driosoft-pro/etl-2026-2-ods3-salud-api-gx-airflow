@@ -20,6 +20,14 @@ else
 fi
 
 export AIRFLOW_UID="${AIRFLOW_UID:-0}"
+# Load COMPOSE_PROJECT_NAME from .env if present (avoids numeric dir-name networks)
+if [ -f .env ]; then
+    _cpn=$(grep -E '^COMPOSE_PROJECT_NAME=' .env | head -1 | cut -d= -f2-)
+    if [ -n "$_cpn" ]; then
+        export COMPOSE_PROJECT_NAME="$_cpn"
+    fi
+fi
+export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-salud_colombia}"
 
 usage() {
     cat <<EOF
@@ -37,7 +45,7 @@ Punto de entrada unico:
   clean-data        Limpia datos intermedios y de salida (data/work, output)
   clean [--yes]     Alias de clean-all
   reset [--yes]     Alias de clean-all
-  trigger           DAG Test A (8/8 success en etl_ods3_salud_colombia)
+  trigger           DAG Test A (8/8 success en reliable_health_pipeline)
   trigger-bad       DAG Test B: simula falla critica DQ-02 (bloqueo controlado)
   validate          Reporte automatizado de confiabilidad (Tests A, B y C)
   test              pytest completo (unidad + integracion)
@@ -48,6 +56,7 @@ Punto de entrada unico:
   smoke             Pipeline local/contenedor sin Airflow (src.etl_main)
   postgrest-test    Probar endpoints REST de PostgREST compatibles con Power BI
   psql              Abrir consola interactiva de PostgreSQL (salud_colombia)
+  audit             Reporte de las ultimas corridas ETL (esquema audit)
 EOF
 }
 
@@ -65,17 +74,25 @@ case "$cmd" in
         $COMPOSE_CMD up -d superset
         $COMPOSE_CMD up -d airflow-init
         sleep 3
-        $COMPOSE_CMD up -d airflow-webserver airflow-scheduler
+        $COMPOSE_CMD up -d airflow-webserver airflow-scheduler airflow-dag-processor
         echo "==> Ejecutando bootstrap de Superset..."
-        $COMPOSE_CMD run --rm superset-bootstrap python /app/scripts/superset_bootstrap.py || true
+        $COMPOSE_CMD exec -T superset env SUPERSET_URL=http://localhost:8088 python /app/scripts/superset_bootstrap.py || true
+        echo "==> Registrando charts R1-R7 en el dashboard..."
+        $COMPOSE_CMD exec -T superset env SUPERSET_URL=http://localhost:8088 python /app/scripts/superset_charts_bootstrap.py || true
+        echo "==> Construyendo dashboards Granularidad y Workshop..."
+        $COMPOSE_CMD exec -T superset env SUPERSET_URL=http://localhost:8088 python /app/scripts/dashboard/granularity.py || true
+        $COMPOSE_CMD exec -T superset env SUPERSET_URL=http://localhost:8088 python /app/scripts/dashboard/workshop.py || true
+        echo "==> Construyendo dashboard de Requerimientos (R1-R7 con tabs)..."
+        $COMPOSE_CMD exec -T superset env SUPERSET_URL=http://localhost:8088 python /app/scripts/dashboard/requirements.py || true
         echo ""
         echo "============================================================"
         echo " INFRAESTRUCTURA LEVANTADA EXITOSAMENTE"
         echo "============================================================"
         echo "  PostgreSQL DW:       localhost:5432 (DB: salud_colombia, user: etl_user)"
+        echo "  Airflow metadata:    localhost:5432 (DB: airflow_meta — NO es el DW)"
         echo "  PostgREST (Power BI): http://localhost:3000"
         echo "  Apache Superset BI:  http://localhost:8088 (admin / admin)"
-        echo "  Apache Airflow 3:    http://localhost:8080 (admin / admin)"
+        echo "  Apache Airflow 3:    http://localhost:8080 (airflow / airflow)"
         echo "============================================================"
         ;;
 
@@ -93,7 +110,7 @@ case "$cmd" in
 
     down|stop)
         echo "==> Deteniendo contenedores..."
-        $COMPOSE_CMD down
+        $COMPOSE_CMD down --remove-orphans 2>/dev/null || true
         ;;
 
     clean-airflow)
@@ -165,8 +182,13 @@ case "$cmd" in
         ;;
 
     superset|superset-init)
-        echo "==> Registrando conexion DW y dashboard en Apache Superset..."
-        $COMPOSE_CMD run --rm superset-bootstrap python /app/scripts/superset_bootstrap.py
+        echo "==> Registrando conexion DW, datasets, charts y dashboard en Apache Superset..."
+        $COMPOSE_CMD exec -T superset env SUPERSET_URL=http://localhost:8088 python /app/scripts/superset_bootstrap.py
+        $COMPOSE_CMD exec -T superset env SUPERSET_URL=http://localhost:8088 python /app/scripts/superset_charts_bootstrap.py
+        echo "==> Construyendo dashboards Granularidad, Workshop y Requerimientos..."
+        $COMPOSE_CMD exec -T superset env SUPERSET_URL=http://localhost:8088 python /app/scripts/dashboard/granularity.py
+        $COMPOSE_CMD exec -T superset env SUPERSET_URL=http://localhost:8088 python /app/scripts/dashboard/workshop.py
+        $COMPOSE_CMD exec -T superset env SUPERSET_URL=http://localhost:8088 python /app/scripts/dashboard/requirements.py
         ;;
 
     postgrest-test)
@@ -188,16 +210,26 @@ case "$cmd" in
         echo "  - PostgREST Vista R6:          http://localhost:3000/v_r6_demographic_coverage"
         echo "  - PostgREST Vista R7:          http://localhost:3000/v_r7_territorial_capacity"
         echo "  - Apache Superset Dashboard:   http://localhost:8088 (admin / admin)"
-        echo "  - Apache Airflow Webserver:    http://localhost:8080 (admin / admin)"
+        echo "  - Apache Airflow Webserver:    http://localhost:8080 (airflow / airflow)"
         ;;
 
     logs)
-        echo "==> Mostrando logs del scheduler de Airflow..."
-        $COMPOSE_CMD logs -f airflow-scheduler airflow-webserver
+        echo "==> Mostrando logs del scheduler, dag-processor y webserver de Airflow..."
+        $COMPOSE_CMD logs -f airflow-scheduler airflow-dag-processor airflow-webserver
         ;;
 
     psql)
         $COMPOSE_CMD exec postgres psql -U etl_user -d salud_colombia
+        ;;
+
+    audit)
+        echo "==> Ultimas corridas ETL registradas (audit.etl_run):"
+        $COMPOSE_CMD exec -T postgres psql -U etl_user -d salud_colombia -c \
+            "SELECT run_id, run_type, status, stage_reached, dq_rules_passed || '/' || dq_rules_total AS dq, ROUND(duration_seconds,1) AS dur_s, started_at FROM audit.etl_run ORDER BY started_at DESC LIMIT 10;"
+        echo ""
+        echo "==> Ultimos lotes de carga al DW (audit.etl_batch_log):"
+        $COMPOSE_CMD exec -T postgres psql -U etl_user -d salud_colombia -c \
+            "SELECT batch_id, run_id, dag_id, status, strategy, target_rows_after, ROUND(duration_seconds,1) AS dur_s, started_at FROM audit.etl_batch_log ORDER BY started_at DESC LIMIT 10;"
         ;;
 
     *)
