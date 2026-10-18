@@ -1,4 +1,4 @@
-# Workshop-2 — Pipeline (Salud Colombia × API Colombia — ODS 3)
+# Pipeline (Salud Colombia × API Colombia — ODS 3)
 Un pipeline por lotes de estilo producción, con la confiabilidad como primera prioridad: CSV de Afiliados al SGSSS (3.369 filas) + Prestadores REPS (41.427 filas) + API REST de Colombia (33 departamentos, 6 regiones) → tres compuertas de validación de Great Expectations (crudo primario, crudo API y datos preparados) → armonización e integración con clave DANE oficial → Almacén de Datos dimensional confiable (PostgreSQL 16) → Capa analítica dual: PostgREST (para Power BI Desktop) y Apache Superset (BI interactivo para KPIs R1–R7), orquestado por Apache Airflow 3.1.8 con la API TaskFlow (8 tareas).
 
 > **Confiabilidad no significa que nada falle. Confiabilidad significa que los fallos se anticipan, se controlan y son observables — y que una re-ejecución nunca corrompe el destino analítico.**
@@ -245,10 +245,17 @@ El entorno de Apache Airflow expone **dos DAGs complementarios** construidos con
 1. **`reliable_health_pipeline` (`dags/reliable_health_pipeline.py`):** Corrida 100% confiable y exitosa (Test A: 8/8 tareas en verde).
 2. **`bad_health_pipeline` (`dags/bad_health_pipeline.py`):** Corrida de demostración con falla controlada (Test B: bloqueo determinista en Gate 1 por violación de regla crítica DQ-02).
 
-```text
-extract_primary ──> validate_primary_raw ──┐
-                                           ├──> transform_and_integrate ──> validate_prepared ──> load_dimensional_dw ──> verify_dw_and_kpis
-extract_api     ──> validate_api_raw     ──┘
+```mermaid
+flowchart LR
+    extract_primary[extract_primary] --> validate_primary_raw[validate_primary_raw]
+    extract_api[extract_api] --> validate_api_raw[validate_api_raw]
+
+    validate_primary_raw --> transform_and_integrate[transform_and_integrate]
+    validate_api_raw --> transform_and_integrate
+
+    transform_and_integrate --> validate_prepared[validate_prepared]
+    validate_prepared --> load_dimensional_dw[load_dimensional_dw]
+    load_dimensional_dw --> verify_dw_and_kpis[verify_dw_and_kpis]
 ```
 
 - **Manejo Selectivo de Reintentos:**
