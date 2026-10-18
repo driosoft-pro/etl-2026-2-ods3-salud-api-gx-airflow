@@ -11,6 +11,7 @@ ENV/
 
 # Jupyter Notebook
 .ipynb_checkpoints/
+.pytest_cache/
 
 # Data processed files (keep raw data)
 #data/processed/*.csv

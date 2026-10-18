@@ -104,7 +104,8 @@ def build_dim_time(df_affiliates: pd.DataFrame, df_facilities: pd.DataFrame) -> 
     logger.info(f"Time dimension records: {len(dim_time)}")
     return dim_time
 
-def build_dim_geografia(df_affiliates: pd.DataFrame, df_facilities: pd.DataFrame) -> pd.DataFrame:
+def build_dim_geografia(df_affiliates: pd.DataFrame, df_facilities: pd.DataFrame,
+                        api_departments: pd.DataFrame = None, api_regions: pd.DataFrame = None) -> pd.DataFrame:
     """Build unified geography dimension with API Colombia enrichment."""
     logger.info("Building unified geography dimension (with API enrichment)...")
     
@@ -133,7 +134,10 @@ def build_dim_geografia(df_affiliates: pd.DataFrame, df_facilities: pd.DataFrame
     ).reset_index(drop=True)
     
     # --- Step 2: Enrich with API Colombia data ---
-    api_df = fetch_departments_from_api()
+    if api_departments is not None:
+        api_df = api_departments.copy()
+    else:
+        api_df, _ = fetch_departments_from_api()
     
     # Initialize API columns with defaults
     dim_geo['capital'] = ''
@@ -144,7 +148,10 @@ def build_dim_geografia(df_affiliates: pd.DataFrame, df_facilities: pd.DataFrame
     dim_geo['region_api'] = ''
     
     if not api_df.empty:
-        regions_df = fetch_regions_from_api()
+        if api_regions is not None:
+            regions_df = api_regions.copy()
+        else:
+            regions_df, _ = fetch_regions_from_api()
         region_map = {}
         if not regions_df.empty:
             region_map = regions_df.set_index('region_id')['region_name'].to_dict()

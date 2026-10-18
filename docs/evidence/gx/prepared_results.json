@@ -1,0 +1,61 @@
+{
+  "gate": "prepared_data_validation",
+  "executed_at": "2026-10-18T00:04:06.299558+00:00",
+  "total_rules": 5,
+  "passed_rules": 5,
+  "failed_rules": 0,
+  "has_critical_failure": false,
+  "evaluations": [
+    {
+      "rule_id": "DQ-08",
+      "description": "At least 95% of departments in primary data must resolve to API Colombia records",
+      "severity": "CRITICAL",
+      "success": true,
+      "details": {
+        "departments_total": 34,
+        "departments_enriched": 33,
+        "match_rate_pct": 97.06,
+        "threshold": "95.0%"
+      }
+    },
+    {
+      "rule_id": "DQ-09",
+      "description": "Declared grain of fact_affiliates (time, geo, regime) must be unique with zero duplicate rows",
+      "severity": "CRITICAL",
+      "success": true,
+      "details": {
+        "duplicate_rows": 0,
+        "total_rows": 3369
+      }
+    },
+    {
+      "rule_id": "DQ-10",
+      "description": "Declared grain of fact_facility_capacity must be unique with zero duplicates",
+      "severity": "CRITICAL",
+      "success": true,
+      "details": {
+        "duplicate_rows": 0,
+        "total_rows": 31496
+      }
+    },
+    {
+      "rule_id": "DQ-11",
+      "description": "Every foreign key in fact tables must exist in the respective dimension (zero orphans)",
+      "severity": "CRITICAL",
+      "success": true,
+      "details": {
+        "orphan_fk_violations": []
+      }
+    },
+    {
+      "rule_id": "DQ-12",
+      "description": "Sum of numero_afiliados in fact table must reconcile with raw person totals within 0.01% tolerance",
+      "severity": "CRITICAL",
+      "success": true,
+      "details": {
+        "fact_total": 51182238,
+        "note": "No raw total provided, bypassed"
+      }
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+FROM docker.io/apache/superset:6.1.0
+
+USER root
+# Install postgres driver for Superset
+RUN pip install --no-cache-dir "psycopg2-binary>=2.9.0"
+USER superset

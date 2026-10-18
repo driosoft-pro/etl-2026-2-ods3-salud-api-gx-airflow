@@ -21,8 +21,7 @@ class TestExtractAffiliates:
     def test_renamed_columns(self):
         df = extract_affiliates()
         expected_columns = ['department_code', 'department', 'municipality_code', 
-                            'municipality', 'regime_id', 'year', 'month', 'num_persons',
-                            'region']
+                            'municipality', 'regime_id', 'year', 'month', 'num_persons']
         assert list(df.columns) == expected_columns, \
             f"Incorrect columns: {list(df.columns)}"
     

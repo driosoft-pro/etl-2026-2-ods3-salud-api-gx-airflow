@@ -1,0 +1,66 @@
+{
+  "gate": "primary_raw_validation",
+  "executed_at": "2026-10-18T00:08:26.860255+00:00",
+  "total_rules": 5,
+  "passed_rules": 4,
+  "failed_rules": 1,
+  "has_critical_failure": true,
+  "evaluations": [
+    {
+      "rule_id": "DQ-01",
+      "description": "Mandatory columns in raw affiliates must not be missing or completely null",
+      "severity": "CRITICAL",
+      "success": true,
+      "details": {
+        "missing_columns": [],
+        "total_columns": 8
+      }
+    },
+    {
+      "rule_id": "DQ-02",
+      "description": "Healthcare regime code must belong to allowed set {S, C, E, I}",
+      "severity": "CRITICAL",
+      "success": false,
+      "details": {
+        "invalid_regimes": [
+          "INVALID_Z"
+        ],
+        "found_regimes": [
+          "E",
+          "S",
+          "C",
+          "I",
+          "INVALID_Z"
+        ]
+      }
+    },
+    {
+      "rule_id": "DQ-03",
+      "description": "Affiliate count must be non-negative and parseable as numeric",
+      "severity": "CRITICAL",
+      "success": true,
+      "details": {
+        "negative_count": 0,
+        "null_count": 0
+      }
+    },
+    {
+      "rule_id": "DQ-04",
+      "description": "Essential facility identity and capacity attributes must be present",
+      "severity": "CRITICAL",
+      "success": true,
+      "details": {
+        "missing_columns": []
+      }
+    },
+    {
+      "rule_id": "DQ-05",
+      "description": "Installed capacity measure must be non-negative (>= 0)",
+      "severity": "CRITICAL",
+      "success": true,
+      "details": {
+        "negative_capacity_count": 0
+      }
+    }
+  ]
+}

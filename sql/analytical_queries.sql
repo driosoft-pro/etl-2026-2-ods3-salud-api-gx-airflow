@@ -157,30 +157,75 @@ JOIN dim_geografia g ON c.sk_geografia = g.sk_geografia
 JOIN dim_capacity_type ct ON c.sk_capacity_type = ct.sk_capacity_type;
 
 -- =====================================================
--- BONUS: API data enrichment queries (from dim_geografia)
+-- R6: Demographic Coverage & Healthcare Penetration Rate
+-- Primary Source (fact_affiliates) + API Source (dim_geografia.population)
+-- Demonstrates the real coverage rate of the SGSSS relative to official census population.
 -- =====================================================
 
--- Population by region (API data in dim_geografia)
-SELECT
-    g.region,
-    SUM(g.population) AS total_population,
-    COUNT(DISTINCT g.departamento) AS department_count
-FROM dim_geografia g
-WHERE g.population > 0
-GROUP BY g.region
-ORDER BY total_population DESC;
-
--- Departments with capital, surface, population
 SELECT
     g.departamento,
-    g.capital,
-    g.surface,
-    g.population,
-    g.municipalities_count,
-    g.region_api
-FROM dim_geografia g
-WHERE g.codigo_dane_municipio = g.codigo_dane_depto || '0000'
-   OR LENGTH(g.codigo_dane_municipio) = 5
-GROUP BY g.departamento, g.capital, g.surface, g.population,
-         g.municipalities_count, g.region_api
-ORDER BY g.departamento;
+    g.region,
+    COALESCE(MAX(g.population), 0) AS poblacion_oficial_api,
+    SUM(f.numero_afiliados) AS total_afiliados_sgsss,
+    SUM(CASE WHEN r.description = 'SUBSIDIZED' THEN f.numero_afiliados ELSE 0 END) AS afiliados_subsidiado,
+    SUM(CASE WHEN r.description = 'CONTRIBUTORY' THEN f.numero_afiliados ELSE 0 END) AS afiliados_contributivo,
+    ROUND((SUM(f.numero_afiliados)::numeric / NULLIF(MAX(g.population), 0)) * 100, 2) AS cobertura_afiliacion_pct,
+    (MAX(g.population) - SUM(f.numero_afiliados)) AS brecha_poblacional_no_afiliada,
+    CASE
+        WHEN MAX(g.population) IS NULL OR MAX(g.population) = 0 THEN 'Sin Dato Demografico'
+        WHEN (SUM(f.numero_afiliados)::numeric / MAX(g.population)) >= 1.05 THEN 'Alta Concentracion / Movilidad'
+        WHEN (SUM(f.numero_afiliados)::numeric / MAX(g.population)) >= 0.90 THEN 'Meta Universal Adecuada'
+        ELSE 'Deficit de Cobertura'
+    END AS categoria_cobertura
+FROM fact_affiliates f
+JOIN dim_geografia g ON f.sk_geografia = g.sk_geografia
+JOIN dim_regime r ON f.sk_regime = r.sk_regime
+WHERE g.codigo_dane_depto != '00' AND g.departamento NOT IN ('SIN DEPARTAMENTO')
+GROUP BY g.departamento, g.region
+ORDER BY cobertura_afiliacion_pct DESC;
+
+-- National summary for R6
+SELECT
+    SUM(f.numero_afiliados) AS total_afiliados_nacional,
+    (SELECT SUM(sub.poblacion_depto) FROM (SELECT MAX(population) AS poblacion_depto FROM dim_geografia WHERE population > 0 GROUP BY codigo_dane_depto) sub) AS poblacion_nacional_api,
+    ROUND(
+        SUM(f.numero_afiliados)::numeric * 100.0 /
+        NULLIF((SELECT SUM(sub.poblacion_depto) FROM (SELECT MAX(population) AS poblacion_depto FROM dim_geografia WHERE population > 0 GROUP BY codigo_dane_depto) sub), 0),
+    2) AS tasa_cobertura_nacional_pct
+FROM fact_affiliates f;
+
+-- =====================================================
+-- R7: Territorial Healthcare Capacity Density
+-- Primary Source (fact_facility_capacity) + API Source (dim_geografia.population & surface)
+-- Evaluates hospital beds per 1,000 inhabitants and capacity per square kilometer.
+-- =====================================================
+
+SELECT
+    g.departamento,
+    g.region,
+    COALESCE(MAX(g.population), 0) AS poblacion_oficial_api,
+    COALESCE(MAX(g.surface), 0) AS superficie_km2,
+    COUNT(DISTINCT c.sk_facility) AS total_ips_habilitadas,
+    SUM(CASE WHEN ct."group" ILIKE '%CAMA%' THEN c.capacity_amount ELSE 0 END) AS total_camas,
+    SUM(CASE WHEN ct."group" ILIKE '%SALA%' THEN c.capacity_amount ELSE 0 END) AS total_salas,
+    SUM(c.capacity_amount) AS capacidad_total_instalada,
+    ROUND((SUM(CASE WHEN ct."group" ILIKE '%CAMA%' THEN c.capacity_amount ELSE 0 END)::numeric / NULLIF(MAX(g.population), 0)) * 1000, 2) AS camas_por_1000_habitantes,
+    ROUND((SUM(c.capacity_amount)::numeric / NULLIF(MAX(g.surface), 0)) * 1000, 2) AS capacidad_por_1000_km2,
+    ROUND(SUM(c.capacity_amount)::numeric / NULLIF(MAX(g.surface), 0), 4) AS densidad_territorial_infraestructura,
+    CASE
+        WHEN MAX(g.population) = 0 OR MAX(g.surface) = 0 THEN 'Sin Dato Base'
+        WHEN (SUM(CASE WHEN ct."group" ILIKE '%CAMA%' THEN c.capacity_amount ELSE 0 END)::numeric / NULLIF(MAX(g.population), 0)) * 1000 >= 2.5 THEN 'Capacidad Hospitalaria Alta'
+        WHEN (SUM(CASE WHEN ct."group" ILIKE '%CAMA%' THEN c.capacity_amount ELSE 0 END)::numeric / NULLIF(MAX(g.population), 0)) * 1000 >= 1.5 THEN 'Capacidad Hospitalaria Moderada'
+        ELSE 'Deficit Hospitalario Critico'
+    END AS nivel_alerta_hospitalaria
+FROM fact_facility_capacity c
+JOIN dim_geografia g ON c.sk_geografia = g.sk_geografia
+JOIN dim_capacity_type ct ON c.sk_capacity_type = ct.sk_capacity_type
+WHERE g.codigo_dane_depto != '00' AND g.departamento NOT IN ('SIN DEPARTAMENTO')
+GROUP BY g.departamento, g.region
+ORDER BY camas_por_1000_habitantes DESC;
+
+-- View query verification (R6 & R7 Views for PostgREST & BI Dashboards)
+SELECT * FROM v_r6_demographic_coverage LIMIT 10;
+SELECT * FROM v_r7_territorial_capacity LIMIT 10;
+

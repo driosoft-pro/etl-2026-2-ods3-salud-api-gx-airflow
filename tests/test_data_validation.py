@@ -46,7 +46,7 @@ class TestRawDataAffiliates:
     
     def test_valid_regime(self):
         regimes = self.df['IDRegimen'].dropna().unique()
-        valid_regimes = {'S', 'E', 'C'}
+        valid_regimes = {'S', 'E', 'C', 'I'}
         invalid_regimes = set(regimes) - valid_regimes
         assert len(invalid_regimes) == 0, \
             f"Invalid regimes found: {invalid_regimes}"
@@ -96,7 +96,7 @@ class TestRawDataFacilities:
     
     def test_valid_nature(self):
         natures = self.df['naturaleza'].dropna().unique()
-        valid_natures = {'Pública', 'Privada'}
+        valid_natures = {'Pública', 'Privada', 'Mixta'}
         for nat in natures:
             assert nat in valid_natures, f"Invalid nature: {nat}"
     

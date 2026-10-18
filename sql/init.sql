@@ -194,3 +194,98 @@ JOIN dim_time t ON c.sk_time = t.sk_time
 JOIN dim_facility i ON c.sk_facility = i.sk_facility
 JOIN dim_geografia g ON c.sk_geografia = g.sk_geografia
 JOIN dim_capacity_type ct ON c.sk_capacity_type = ct.sk_capacity_type;
+
+-- =====================================================
+-- R6: VIEW DEMOGRAPHIC COVERAGE & PENETRATION RATE
+-- Integrates primary affiliates with API Colombia population
+-- =====================================================
+CREATE OR REPLACE VIEW v_r6_demographic_coverage AS
+WITH dept_affiliates AS (
+    SELECT
+        g.codigo_dane_depto,
+        g.departamento,
+        g.region,
+        COALESCE(MAX(g.population), 0) AS poblacion_oficial_api,
+        SUM(f.numero_afiliados) AS total_afiliados_sgsss,
+        SUM(CASE WHEN r.description = 'SUBSIDIZED' THEN f.numero_afiliados ELSE 0 END) AS afiliados_subsidiado,
+        SUM(CASE WHEN r.description = 'CONTRIBUTORY' THEN f.numero_afiliados ELSE 0 END) AS afiliados_contributivo,
+        SUM(CASE WHEN r.description NOT IN ('SUBSIDIZED', 'CONTRIBUTORY') THEN f.numero_afiliados ELSE 0 END) AS afiliados_otros
+    FROM fact_affiliates f
+    JOIN dim_geografia g ON f.sk_geografia = g.sk_geografia
+    JOIN dim_regime r ON f.sk_regime = r.sk_regime
+    WHERE g.codigo_dane_depto != '00' AND g.departamento NOT IN ('SIN DEPARTAMENTO')
+    GROUP BY g.codigo_dane_depto, g.departamento, g.region
+)
+SELECT
+    codigo_dane_depto,
+    departamento,
+    region,
+    poblacion_oficial_api,
+    total_afiliados_sgsss,
+    afiliados_subsidiado,
+    afiliados_contributivo,
+    afiliados_otros,
+    ROUND((total_afiliados_sgsss::numeric / NULLIF(poblacion_oficial_api, 0)) * 100, 2) AS cobertura_afiliacion_pct,
+    (poblacion_oficial_api - total_afiliados_sgsss) AS brecha_poblacional,
+    CASE
+        WHEN poblacion_oficial_api IS NULL OR poblacion_oficial_api = 0 THEN 'Sin Dato Demográfico'
+        WHEN (total_afiliados_sgsss::numeric / poblacion_oficial_api) >= 1.05 THEN 'Alta Concentración / Movilidad'
+        WHEN (total_afiliados_sgsss::numeric / poblacion_oficial_api) >= 0.90 THEN 'Meta Universal Adecuada'
+        ELSE 'Déficit de Cobertura'
+    END AS categoria_cobertura
+FROM dept_affiliates
+ORDER BY cobertura_afiliacion_pct DESC;
+
+-- =====================================================
+-- R7: VIEW TERRITORIAL HEALTHCARE CAPACITY DENSITY
+-- Integrates primary facility capacity with API Colombia population & surface
+-- =====================================================
+CREATE OR REPLACE VIEW v_r7_territorial_capacity AS
+WITH dept_capacity AS (
+    SELECT
+        g.codigo_dane_depto,
+        g.departamento,
+        g.region,
+        COALESCE(MAX(g.population), 0) AS poblacion_oficial_api,
+        COALESCE(MAX(g.surface), 0) AS superficie_km2,
+        SUM(c.capacity_amount) AS capacidad_total_instalada,
+        SUM(CASE WHEN ct."group" ILIKE '%CAMA%' THEN c.capacity_amount ELSE 0 END) AS total_camas,
+        SUM(CASE WHEN ct."group" ILIKE '%SALA%' THEN c.capacity_amount ELSE 0 END) AS total_salas,
+        COUNT(DISTINCT c.sk_facility) AS total_ips_habilitadas
+    FROM fact_facility_capacity c
+    JOIN dim_geografia g ON c.sk_geografia = g.sk_geografia
+    JOIN dim_capacity_type ct ON c.sk_capacity_type = ct.sk_capacity_type
+    WHERE g.codigo_dane_depto != '00' AND g.departamento NOT IN ('SIN DEPARTAMENTO')
+    GROUP BY g.codigo_dane_depto, g.departamento, g.region
+)
+SELECT
+    codigo_dane_depto,
+    departamento,
+    region,
+    poblacion_oficial_api,
+    superficie_km2,
+    total_ips_habilitadas,
+    total_camas,
+    total_salas,
+    capacidad_total_instalada,
+    ROUND((total_camas::numeric / NULLIF(poblacion_oficial_api, 0)) * 1000, 2) AS camas_por_1000_hab,
+    ROUND((capacidad_total_instalada::numeric / NULLIF(superficie_km2, 0)) * 1000, 2) AS capacidad_por_1000_km2,
+    ROUND(capacidad_total_instalada::numeric / NULLIF(superficie_km2, 0), 4) AS densidad_territorial_infraestructura,
+    CASE
+        WHEN poblacion_oficial_api = 0 OR superficie_km2 = 0 THEN 'Sin Dato Base'
+        WHEN (total_camas::numeric / NULLIF(poblacion_oficial_api, 0)) * 1000 >= 2.5 THEN 'Capacidad Hospitalaria Alta'
+        WHEN (total_camas::numeric / NULLIF(poblacion_oficial_api, 0)) * 1000 >= 1.5 THEN 'Capacidad Hospitalaria Moderada'
+        ELSE 'Déficit Hospitalario Crítico'
+    END AS nivel_alerta_hospitalaria
+FROM dept_capacity
+ORDER BY camas_por_1000_hab DESC;
+
+-- =====================================================
+-- POSTGREST & BI PERMISSIONS
+-- Expose public views and tables for PostgREST & Power BI REST access
+-- =====================================================
+GRANT USAGE ON SCHEMA public TO PUBLIC;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO PUBLIC;
+GRANT SELECT ON ALL SEQUENCES IN SCHEMA public TO PUBLIC;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO PUBLIC;
+

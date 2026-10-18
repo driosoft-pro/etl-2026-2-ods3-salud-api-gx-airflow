@@ -1,982 +1,507 @@
-# ETL Health Colombia — ODS 3: Salud y Bienestar
+# Workshop-2 — Pipeline (Salud Colombia × API Colombia — ODS 3)
+Un pipeline por lotes de estilo producción, con la confiabilidad como primera prioridad: CSV de Afiliados al SGSSS (3.369 filas) + Prestadores REPS (41.427 filas) + API REST de Colombia (33 departamentos, 6 regiones) → tres compuertas de validación de Great Expectations (crudo primario, crudo API y datos preparados) → armonización e integración con clave DANE oficial → Almacén de Datos dimensional confiable (PostgreSQL 16) → Capa analítica dual: PostgREST (para Power BI Desktop) y Apache Superset (BI interactivo para KPIs R1–R7), orquestado por Apache Airflow 3.1.8 con la API TaskFlow (8 tareas).
 
-**Course:** ETL (G01) — Data Engineering and Artificial Intelligence
-**Phase:** 1 — From Analytical Requirements to a Dimensional Data Warehouse
-**SDG:** Goal 3 — Good Health and Well-Being | Target 3.8: Achieve universal health coverage
-
----
-
-## 1. Project Objective
-
-### 1.1 General Objective
-
-Design and implement an **ETL pipeline** that transforms raw healthcare data from Colombian open data sources into a **dimensional data warehouse** (star schema) to analyze geographic disparities in healthcare access, aligned with SDG Target 3.8.
-
-### 1.2 Specific Objectives
-
-| # | Objective | Deliverable |
-|---|-----------|-------------|
-| O1 | Profile and clean raw datasets (affiliates + facilities) | Clean CSV files with data quality fixes |
-| O2 | Design a normalized star schema (5 dimensions, 2 fact tables) | `sql/init.sql` DDL script |
-| O3 | Build an automated ETL pipeline (Extract → Transform → Validate → Load) | `src/` Python modules |
-| O4 | Enrich geographic data with API Colombia (capital, surface, population) | `dim_geografia` with external data |
-| O5 | Load data into PostgreSQL and export CSVs for BI tools | PostgreSQL DW + `data/processed/` CSVs |
-| O6 | Answer 5 analytical requirements (R1–R5) with SQL queries | `sql/analytical_queries.sql` |
-| O7 | Visualize results in Power BI dashboard | `visualizations/dashboard.png` |
-
-### 1.3 Project Granularity
-
-| Aspect | Scope |
-|--------|-------|
-| **Geographic** | National — 33 departments + Bogotá D.C., 1,046+ municipalities |
-| **Temporal** | Cross-sectional snapshots: Q2 2022 (affiliates), Q4 2022 (facilities) |
-| **Institutional** | Healthcare facilities (IPS) registered in REPS |
-| **Regime** | Subsidized, Contributory, Special, Individual |
-| **Infrastructure** | Beds (CAMAS), procedural rooms (SALAS), equipment by care level |
-
-### 1.4 Expected Results
-
-- **5 dimension tables**: `dim_time`, `dim_geografia`, `dim_regime`, `dim_facility`, `dim_capacity_type`
-- **2 fact tables**: `fact_affiliates` (3,369 rows), `fact_facility_capacity` (31,496 rows)
-- **Unified geography dimension** enriched with API Colombia data (capital, surface, population)
-- **Power BI dashboard** with geographic maps, KPIs, and regime distribution charts
-- **5 analytical queries** answering R1–R5 requirements
+> **Confiabilidad no significa que nada falle. Confiabilidad significa que los fallos se anticipan, se controlan y son observables — y que una re-ejecución nunca corrompe el destino analítico.**
 
 ---
 
-## 2. Colombian Problem Definition
-
-Colombia's healthcare system faces significant territorial disparities in access to services. While the country has achieved high affiliation rates through the General System of Social Security in Health (SGSSS), the distribution of healthcare infrastructure (beds, equipment, specialized services) does not proportionally match the population's needs across departments and municipalities. Some regions maintain high capacity per affiliate while others face critical shortages.
-
-This analysis focuses on two complementary dimensions of healthcare access:
-
-1. **Affiliation coverage**: How many affiliates are enrolled per regime (Subsidized/Contributory) across municipalities and departments.
-2. **Infrastructure capacity**: How much installed capacity (beds, procedural rooms, equipment) exists per healthcare facility.
-
-Understanding the relationship between affiliation density and infrastructure capacity is essential for identifying underserved regions and informing resource allocation decisions.
-
-**Geographic scope:** National (33 departments + Bogotá D.C.), across all municipalities.
-
-**Population of interest:** Affiliates of the Colombian healthcare system and healthcare facilities (IPS).
-
-**Potential stakeholders:** Ministry of Health and Social Protection (Minsalud), departmental health secretaries, EPS (healthcare promoting entities), hospital managers, healthcare policy researchers.
-
----
-
-## 3. Analytical Requirements (R1–R5)
-
-**Analytical Objective:** Analyze the distribution of healthcare affiliates and infrastructure capacity across Colombian territories to identify geographic disparities and support resource allocation decisions aligned with SDG Target 3.8.
-
-### Requirements Matrix
-
-| ID | Analytical Requirement | Business Question | Decision / Insight Supported |
-|----|----------------------|-------------------|------------------------------|
-| R1 | Determine the total number of affiliates by regime type nationally | How many Colombians are affiliated to each regime (Subsidized, Contributory, Special, Individual)? | Understand the composition of the healthcare system and the relative weight of each regime for policy planning. |
-| R2 | Identify the departments with the highest and lowest affiliate density | Which departments concentrate the most/least affiliates, and how does this relate to their population? | Detect territorial disparities in healthcare coverage to prioritize interventions in underserved departments. |
-| R3 | Analyze the distribution of healthcare facilities by nature (public/private) and care level | What is the public-private mix of healthcare providers and at what care levels do they operate? | Evaluate whether the private sector complements or duplicates public infrastructure, informing public investment decisions. |
-| R4 | Compare installed capacity (beds, rooms) per affiliate across departments | Which departments have sufficient infrastructure relative to their affiliated population? | Identify regions where infrastructure expansion is needed to meet demand. |
-| R5 | Assess the relationship between regime type and geographic distribution | Are Subsidized regime affiliates concentrated in different territories than Contributory regime affiliates? | Understand whether healthcare regime segmentation maps to geographic inequity, supporting targeted policy design. |
+## Tabla de Contenido
+1. [Problema Analítico y Objetivos](#1-problema-analítico-y-objetivos)
+2. [Granularidad y Declaración de Grano](#2-granularidad-y-declaración-de-grano)
+3. [Requerimientos Analíticos y Resultados Esperados (R1 a R7)](#3-requerimientos-analíticos-y-resultados-esperados-r1-a-r7)
+4. [Fuentes de Datos y Valor Agregado de la API Colombia](#4-fuentes-de-datos-y-valor-agregado-de-la-api-colombia)
+5. [Arquitectura del Sistema de Datos](#5-arquitectura-del-sistema-de-datos)
+6. [Perfilamiento de Datos y Hallazgos Cuantitativos](#6-perfilamiento-de-datos-y-hallazgos-cuantitativos)
+7. [Catálogo de Reglas de Calidad (DQ-01 a DQ-12)](#7-catálogo-de-reglas-de-calidad-dq-01-a-dq-12)
+8. [Diseño de Validación con Great Expectations](#8-diseño-de-validación-con-great-expectations)
+9. [Estrategia de Transformación y Contrato de Integración DANE](#9-estrategia-de-transformación-y-contrato-de-integración-dane)
+10. [Modelo Dimensional Conforme (Data Warehouse)](#10-modelo-dimensional-conforme-data-warehouse)
+11. [Orquestación y Políticas de Reintento con Apache Airflow 3.1.8](#11-orquestación-y-políticas-de-reintento-con-apache-airflow-318)
+12. [Pruebas Obligatorias de Confiabilidad (Tests A, B y C)](#12-pruebas-obligatorias-de-confiabilidad-tests-a-b-y-c)
+13. [Capa de Consumo y Business Intelligence (PostgREST, Power BI, Superset)](#13-capa-de-consumo-y-business-intelligence-postgrest-power-bi-superset)
+14. [Matriz de Trazabilidad de Extremo a Extremo](#14-matriz-de-trazabilidad-de-extremo-a-extremo)
+15. [Cómo Usar el Repositorio](#15-cómo-usar-el-repositorio)
+    - [15.1 run.sh / run.bat (Punto de Entrada Único)](#151-runsh--runbat-punto-de-entrada-único)
+    - [15.2 Servicios, Puertos y Clientes (Host / VM Windows 11)](#152-servicios-puertos-y-clientes-host--vm-windows-11)
+    - [15.3 Conexión con DBeaver (Explorar salud_colombia)](#153-conexión-con-dbeaver-explorar-salud_colombia)
+    - [15.4 Conexión con Power BI Desktop (Vía PostgREST)](#154-conexión-con-power-bi-desktop-vía-postgrest)
+    - [15.5 Ejecución Manual (Sin run.sh)](#155-ejecución-manual-sin-runsh)
+    - [15.6 Pipeline Local en el Host (Sin Airflow)](#156-pipeline-local-en-el-host-sin-airflow)
+    - [15.7 Estructura del Repositorio](#157-estructura-del-repositorio)
+    - [15.8 Supuestos y Limitaciones](#158-supuestos-y-limitaciones)
+16. [Hallazgos Clave de Negocio (R1–R7)](#16-hallazgos-clave-de-negocio-r1r7)
 
 ---
 
-## 4. SDG Alignment
+## 1. Problema Analítico y Objetivos
 
-**SDG 3 — Good Health and Well-Being**
-**Target 3.8:** Achieve universal health coverage (UHC), including financial risk protection, access to quality essential healthcare services, and access to safe, effective, quality, and affordable essential medicines and vaccines for all.
+### 1.1 Contexto: Disparidades Territoriales en el SGSSS
+El Sistema General de Seguridad Social en Salud (SGSSS) de Colombia reporta formalmente una afiliación nominal que supera los 51 millones de ciudadanos (~99% de la población censal). No obstante, existe una profunda disparidad estructural entre la afiliación formal y el acceso efectivo a la infraestructura física de atención:
+- Los departamentos andinos concentran altos volúmenes de camas y salas de cirugía en el régimen contributivo y prestadores privados.
+- Los departamentos periféricos (Amazonía, Orinoquía y Pacífico) dependen casi exclusivamente del régimen subsidiado y de una red pública con menos de 1 cama hospitalaria por cada 1.000 habitantes, muy por debajo del estándar internacional de la OMS (>2.5 camas/1.000 hab).
 
-This project directly addresses Target 3.8 by analyzing:
-
-- **Coverage breadth** (R1, R2): Measuring how many Colombians are affiliated to the healthcare system and where they are located.
-- **Service availability** (R3, R4): Assessing whether healthcare infrastructure exists to serve the affiliated population.
-- **Equity** (R5): Examining whether access to healthcare services is equitably distributed across regimes and territories.
-
-Colombia's SGSSS achieves ~99% affiliation nationally, but affiliation does not guarantee access. Infrastructure gaps, geographic barriers, and regime-based service differences create effective disparities in healthcare access. This analysis provides the data foundation to identify and quantify these gaps.
-
----
-
-## 5. Dataset Source Selection
-
-| Characteristic | Affiliates Dataset | Facilities Dataset |
-|---|---|---|
-| **Source** | SISPRO — Sistema Integrado de Información de la Protección Social | REPS — Registro Especial de Prestadores de Servicios de Salud |
-| **Institution / Owner** | Ministerio de Salud y Protección Social (Minsalud) | Ministerio de Salud y Protección Social (Minsalud) |
-| **URL** | https://www.datos.gov.co/Salud-y-Protecci-n-Social/Relaci-n-de-IPS-p-blicas-y-privadas-seg-n-el-nivel/s2ru-bqt6/about_data  | https://www.datos.gov.co/Salud-y-Protecci-n-Social/N-mero-de-afiliados-por-departamento-municipio-y-r/hn4i-593p/about_data  |
-| **Mechanism** | CSV download from Datos Abiertos Colombia | CSV download from Datos Abiertos Colombia |
-| **Format** | CSV (comma-separated, period as thousand separator) | CSV (comma-separated) |
-| **Records** | 3,369 rows | 41,427 rows |
-| **Attributes** | 8 columns | 20 columns |
-| **Geographic Coverage** | 34 departments, 1,046 municipalities | 38 departments, all major municipalities |
-| **Temporal Coverage** | April 2022 (Q2 2022 snapshot) | November 2022 (Q4 2022 snapshot, REPS cutoff) |
-| **Numerical Measures** | `NumPersonas` (number of affiliates per department/municipality/regime/month) | `num cantidad capacidad instalada` (installed capacity: beds, procedural rooms, equipment) |
-| **Categorical Attributes** | Department, Municipality, Regime type (S/C/E/I) | Department, Municipality, Nature (Public/Private/Mixed), Care Level, Capacity Group, Capacity Description |
-
-### Dataset Suitability Matrix
-
-| Criterion | Assessment |
-|---|---|
-| **Institution / Data Owner** | Ministerio de Salud y Protección Social (Minsalud) |
-| **Source** | SISPRO (affiliates) / REPS (facilities) |
-| **URL** | datos.gov.co — Official open data portal |
-| **Mechanism** | Direct CSV download |
-| **Format** | CSV |
-| **Number of Records** | 3,369 (affiliates) + 41,427 (facilities) = 44,796 total |
-| **Number of Attributes** | 8 (affiliates) + 20 (facilities) |
-| **Geographic Coverage** | National — all 33 departments + Bogotá D.C. |
-| **Temporal Coverage** | Q2 2022 (affiliates), Q4 2022 (facilities) — cross-sectional snapshots |
-| **Relevant Numerical Measures** | Number of affiliates, installed capacity (beds, rooms, equipment) |
-| **Relevant Categorical Attributes** | Regime type, department, municipality, facility nature, care level, capacity type |
-| **Potential Data-Quality Issues** | Periods as thousand separators in NumPersonas; 61% null care_level in facilities; some missing contact data; duplicate facility rows for different capacity types |
-| **Relationship with Requirements** | R1→NumPersonas by regime; R2→NumPersonas by department; R3→nature/care_level; R4→capacity vs affiliates; R5→regime × geography |
-| **Suitability for Dimensional Modeling** | High — clear grain (affiliation row per dept/muni/regime/month; facility row per provider/capacity type), natural dimensions (time, geography, regime, facility, capacity type) |
-| **Unit of Observation (Source)** | Affiliates: one row = total affiliates for a regime in a municipality for a month. Facilities: one row = installed capacity entry for a facility and capacity type. |
+### 1.2 Objetivo del Sistema
+Construir un **pipeline ETL por lotes, observable, modular y con pruebas automatizadas de confiabilidad**, capaz de:
+1. Extraer y validar microdatos primarios de afiliación y prestadores junto con la API demográfica externa de Colombia.
+2. Hacer cumplir compuertas de calidad mediante **Great Expectations (GX)** que detengan la ejecución ante violaciones críticas sin contaminar el almacén.
+3. Cargar un **Data Warehouse dimensional en PostgreSQL 16** con claves subrogadas, integridad referencial estricta y reconciliación métrica completa.
+4. Exponer vistas dimensionales para **Apache Superset** y **Power BI Desktop** (vía **PostgREST** en HTTP/JSON) para monitorear los 7 requerimientos de cobertura territorial (ODS 3 / Meta 3.8).
 
 ---
 
-## 6. Data Profiling and Quality Assessment
+## 2. Granularidad y Declaración de Grano
 
-### 5.1 Affiliates Dataset
+Para evitar anomalías de agregación ("double counting") y asegurar que cada hecho tenga una identidad dimensional unívoca, se formaliza la siguiente declaración de grano:
 
-| Attribute | Type | Nulls | Unique Values | Notes |
-|---|---|---|---|---|
-| CodDepto | String | 0 | 34 | Department DANE code |
-| Departamento | String | 0 | 34 | Department name |
-| CodMunicipio | String | 0 | 1,046 | Municipality DANE code |
-| Municipio | String | 0 | 1,046 | Municipality name |
-| IDRegimen | String | 0 | 4 | S=Subsidized, C=Contributory, E=Special, I=Individual |
-| Año | String | 0 | 1 | 2022 |
-| Mes | String | 0 | 1 | 4 (April only) |
-| NumPersonas | String | 0 | — | Range: 1–6,410,877. Sum: 51,182,238. Period used as thousand separator. |
-
-**Quality Issues:**
-- NumPersonas stored as string with period thousand separators (e.g., "2.194" = 2,194)
-- Temporal coverage limited to single month (April 2022)
-- No null values detected
-- No fully duplicated rows
-
-### 5.2 Facilities Dataset
-
-| Attribute | Type | Nulls | Unique Values | Notes |
-|---|---|---|---|---|
-| Departamento | String | 0 | 38 | Department name |
-| Municipio | String | 0 | — | Municipality name |
-| Código prestador | String | 0 | — | Unique provider identifier |
-| Nombre prestador | String | 0 | — | Facility name |
-| nit IPS | String | 0 | — | NIT with comma separators |
-| naturaleza | String | 0 | 3 | Pública, Privada, Mixta |
-| num nivel atencion | String | 25,266 (61.0%) | — | Care level (1–4) |
-| nom grupo capacidad | String | 0 | — | CAMAS, SALAS, etc. |
-| nom descripcion capacidad | String | 0 | — | TPR, Adultos, Pediátrica, etc. |
-| num cantidad capacidad instalada | String | 0 | — | Range: 1–650+ |
-| Fecha Corte | String | 0 | 1 | November 5, 2022 |
-| Gerente | String | 225 (0.5%) | — | Manager name |
-| Email | String | 65 (0.2%) | — | Contact email |
-| Teléfono | String | 1,309 (3.2%) | — | Contact phone |
-
-**Quality Issues:**
-- 61% null values in `num nivel atencion` (care level) — not all facilities report this
-- NIT contains comma separators requiring cleanup
-- Phone numbers have inconsistent formatting
-- Each facility may appear multiple rows (one per capacity type entry)
-- Some missing contact information (manager, email, phone)
+| Tabla de Hechos | Declaración Formal del Grano | Clave de Grano (Granularity Key) | Medidas Almacenadas | Comportamiento Aditivo | Registros Cargados |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **`fact_affiliates`** | Un registro por cada **Municipio (`sk_geografia`)**, en un **Trimestre (`sk_time`)**, para un **Régimen de Afiliación (`sk_regime`)** específico. | `(sk_time, sk_geografia, sk_regime)` | `numero_afiliados` (INTEGER) | Totalmente aditiva a través de tiempo, geografía y régimen. | **3.369** filas (51.182.238 personas) |
+| **`fact_facility_capacity`** | Un registro por cada **Sede Prestadora (`sk_facility`)**, en un **Corte Temporal (`sk_time`)**, para un **Tipo Específico de Capacidad (`sk_capacity_type`)** en su respectiva **Ubicación (`sk_geografia`)**. | `(sk_time, sk_facility, sk_capacity_type, sk_geografia)` | `capacity_amount` (INTEGER) | Semi-aditiva en el tiempo (instantánea de inventario); aditiva a través de geografía, tipo y prestador. | **31.496** filas (Camas, Salas, Consultorios) |
 
 ---
 
-## 7. Requirements-to-Data Traceability
+## 3. Requerimientos Analíticos y Resultados Esperados (R1 a R7)
 
-| Requirement | Required Attributes | Transformation Needed | Expected KPI / Analysis |
-|---|---|---|---|
-| **R1** — Affiliates by regime | `IDRegimen`, `NumPersonas` | Parse NumPersonas (remove separators), aggregate by regime | Total affiliates per regime type (S, C, E, I) |
-| **R2** — Department density | `Departamento`, `NumPersonas`, `CodDepto` | Aggregate by department, normalize by population or area | Top/bottom departments by affiliate count |
-| **R3** — Facilities by nature/level | `naturaleza`, `num nivel atencion`, `Código prestador` | Deduplicate facilities, aggregate by nature and care level | Distribution of public vs private by care level |
-| **R4** — Capacity per affiliate | `num cantidad capacidad instalada`, `NumPersonas`, `Departamento` | Join affiliates and facilities via department, compute capacity/affiliate ratio | Capacity-to-affiliate ratio by department |
-| **R5** — Regime × Geography | `IDRegimen`, `Departamento`, `Municipio`, `NumPersonas` | Pivot regime by geography, compute regime distribution per department | Subsidized vs Contributory concentration by region |
+El sistema soporta integralmente los requerimientos base (R1–R5) y los requerimientos de integración demográfica externa (R6 y R7):
 
----
-
-## 8. Data Preparation Strategy
-
-| Issue Detected | Strategy | Justification |
-|---|---|---|
-| **NumPersonas as string with periods** | Remove thousand-separator periods, convert to integer | Required for numeric aggregation in fact tables |
-| **NIT with commas** | Remove commas from NIT strings | Standardize identifier format for dimension matching |
-| **Phone number formatting** | Extract numeric digits only using regex | Normalize inconsistent phone formats for dimension storage |
-| **Department name normalization** | Uppercase, remove accents (NFKD), map aliases (e.g., "VALLE" → "VALLE DEL CAUCA") | Ensure consistent department names across datasets for joins |
-| **"NO APLICA" department** | Map to "SIN DEPARTAMENTO" with DANE code "00" (preserves 1,315,701 affiliates) | Records without geographic assignment are retained for sum consistency; synthetic code "00" allows traceability |
-| **Zero affiliates** | Drop rows where NumPersonas ≤ 0 | Zero-count records do not contribute to analytical value |
-| **Missing care level (61% null)** | Store as NULL (nullable integer) | Care level is not critical for capacity analysis; NULL preserves data integrity without introducing artificial categories |
-| **Duplicate facility rows** | Keep unique (provider_code, municipality) combinations | Each facility appears once in dim_facility; capacity types are separate entries |
-| **Derived: quarter, periodo_codigo** | Compute quarter from month, generate "YYYY-QN" code | Enables temporal aggregation at quarterly granularity |
-| **Derived: region** | Map departments to 6 official regions (Amazonia, Andina, Caribe, Insular, Orinoquia, Pacifico) | Enables regional-level analysis required by R2 and R5 |
+| ID | Requerimiento / Pregunta de Negocio | Fuentes Involucradas | Clave de Cruce | Grano Analítico | Métrica / KPI Calculado | Salida Esperada en BI |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **R1** | **Distribución por Régimen:** ¿Cuál es la participación porcentual de afiliados en cada régimen? | CSV Afiliados | Régimen ID | Nacional por Régimen | `total_afiliados` y `% participacion = (Afiliados / Total) * 100` | KPI + Gráfico de dona / barras de regímenes |
+| **R2** | **Concentración Departamental:** ¿Cuáles son los 10 departamentos con mayor y menor volumen de afiliados? | CSV Afiliados | `codigo_dane_depto` | Departamental | `total_afiliados` ordenados de forma ascendente y descendente | Gráfico de barras horizontales (Top 10 / Bottom 10) |
+| **R3** | **Matriz de Capacidad REPS:** ¿Cómo se distribuye la infraestructura por naturaleza jurídica y nivel de atención? | CSV Prestadores (REPS) | `sk_facility` | Naturaleza × Nivel | Conteo de IPS y suma de `capacity_amount` por grupo | Tabla matricial y gráfico de barras apiladas |
+| **R4** | **Capacidad por Afiliado:** ¿Cuál es el ratio de capacidad instalada disponible por afiliado en cada departamento? | CSV REPS + CSV Afiliados | `codigo_dane_depto` | Departamental | `capacity_per_affiliate = total_capacity / total_affiliates` | Mapa territorial / gráfico de dispersión |
+| **R5** | **Equidad Regional:** ¿Cómo varía la penetración del régimen Subsidiado vs Contributivo en las 6 macro-regiones? | CSV Afiliados | `region` | Regional × Régimen | `% subsidiado` vs `% contributivo` dentro de cada región | Gráfico de barras 100% apiladas por región |
+| **R6** | **Cobertura Demográfica y Brecha Sanitaria:** ¿Cuál es la tasa real de aseguramiento frente a la población censal oficial? | CSV Afiliados + API Colombia (`/Department`) | `codigo_dane_depto` | Departamental | `cobertura_pct = (Afiliados / Poblacion_API) * 100` y `brecha = Poblacion - Afiliados` | KPI Nacional + Indicador tipo Gauge / Alerta |
+| **R7** | **Densidad Hospitalaria y Alerta Territorial:** ¿Cumplen los departamentos con el estándar OMS (>2.5 camas/1k hab) y cuál es su densidad territorial? | CSV REPS + API Colombia (`/Department`) | `codigo_dane_depto` | Departamental | `camas_por_1000_hab = (Camas / Poblacion) * 1000` y `densidad_km2 = Capacidad / Superficie` | Gráfico de dispersión (Camas/1k hab vs Superficie km²) |
 
 ---
 
-## 9. Grain Declaration
+## 4. Fuentes de Datos y Valor Agregado de la API Colombia
 
-**One row in `fact_affiliates` represents** the total number of accumulated healthcare affiliates for a specific regime type (Subsidized, Contributory, Special, or Individual) in a specific geography (municipality/department/region) during a specific quarter (Q2 2022).
-
-**One row in `fact_facility_capacity` represents** the installed capacity (beds, procedural rooms, or equipment) for a specific healthcare facility (IPS), a specific capacity type, and a specific geography at a point in time (Q4 2022 snapshot).
-
----
-
-## 10. Dimensional Data Model
-
-### 9.1 Star Schema
-
-The dimensional model was simplified to a unified 5-dimension star schema. Both fact tables reference a **single conformed geography dimension** (`dim_geografia`), which is enriched with API Colombia data (capital, surface, population, municipalities_count, phone_prefix, region_api).
-
-![Star Schema](diagrams/starShema.png)
-
-### 9.2 Dimension and Fact Justification
-
-| Table | Justification |
-|---|---|
-| **dim_time** | Temporal analysis is required by R1, R2, R4, R5. Quarterly granularity matches the data snapshot. Semester and year enable multi-level temporal roll-ups. |
-| **dim_geografia** | **Conformed geography dimension** used by both fact tables. Includes DANE codes, municipality, department, region, and API Colombia enrichment (capital, surface, population, municipalities_count, phone_prefix, region_api). Eliminates redundant geographic tables. |
-| **dim_regime** | Regime type is the core analytical dimension for R1, R5. Maps S/C/E/I codes to descriptive names. |
-| **dim_facility** | Facility-level analysis required by R3, R4. Contains provider attributes (nature, care level, contact) for descriptive slicing. References `dim_geografia` via `sk_geografia` FK. |
-| **dim_capacity_type** | Capacity types (CAMAS/SALAS × TPR/Adultos/Pediátrica) required for R3, R4 infrastructure analysis. |
-| **fact_affiliates** | Stores the measure `numero_afiliados` at the grain: quarter + geography + regime. Supports R1, R2, R5. References `dim_geografia` directly. |
-| **fact_facility_capacity** | Stores the measure `capacity_amount` at the grain: facility + capacity type + geography + time snapshot. Supports R3, R4. References `dim_geografia` directly for geographic analysis. |
-
-### 9.3 Why Two Fact Tables?
-
-The two fact tables have **different granularities**:
-- `fact_affiliates` is aggregated at (quarter, geography, regime) — a many-to-many relationship between territory and regime.
-- `fact_facility_capacity` is at (facility, capacity type, geography, time) — individual facility-level infrastructure data.
-
-Both reference the same conformed `dim_geografia` dimension directly, enabling cross-fact geographic analysis (e.g., capacity per affiliate by department) without duplicating geographic data.
-
-### 9.4 Normalization Changes (v3)
-
-| Change | Before (v2) | After (v3) | Rationale |
-|---|---|---|---|
-| Geography dimension | `dim_geografia` used by affiliates; `dim_department`/`dim_municipality` used by facilities; `dim_department_api` for API enrichment | **Single `dim_geografia`** used by both fact tables, enriched with API Colombia data | Eliminates geographic redundancy; API attributes (capital, surface, population) live directly in `dim_geografia` |
-| Removed tables | `dim_department`, `dim_municipality`, `dim_department_api` existed as separate dimensions | **Removed** — all geographic data unified in `dim_geografia` | Reduces schema complexity from 8 dimensions to 5; eliminates unnecessary hierarchy helpers |
-| `dim_facility` geography FK | Referenced `dim_municipality` | References `dim_geografia` via `sk_geografia` FK | Direct geographic linkage without intermediate municipality dimension |
-| `fact_facility_capacity` geography | Had `sk_geografia` FK through separate path | Direct `sk_geografia` FK to unified dimension | Simplified geographic analysis without joins through facility hierarchy |
+1. **Fuente Primaria 1 — Afiliados al SGSSS (`affiliates_by_department_municipality_regime_...csv`):**
+   - Granularidad: Municipio × Régimen × Trimestre (Corte Abril 2022 / Q2).
+   - Volumen: 3.369 filas crudas. Cero nulos en columnas maestras.
+   - Regímenes: `S` (Subsidiado), `C` (Contributivo), `E` (Especial), `I` (Excepción/Individual).
+2. **Fuente Primaria 2 — Prestadores e Infraestructura REPS (`healthcare_facilities_by_level_capacity_...csv`):**
+   - Granularidad: Sede prestadora × Servicio × Capacidad instalada (Corte Noviembre 2022).
+   - Volumen: 41.427 filas crudas. 9.320 prestadores únicos, 10.921 sedes habilitadas.
+   - Grupos: Consultorios (16.053), Salas (7.597), Camas (6.738), Ambulancias (5.340), Camillas (4.409).
+3. **Fuente Secundaria — API Colombia REST (`https://api-colombia.com/api/v1`):**
+   - Endpoints consumidos: `/Department` (33 registros) y `/Region` (6 registros).
+   - Atributos adquiridos: `population`, `surface` (km²), `cityCapital`, `municipalities`, `phonePrefix`, `regionId`.
+   - **Valor Agregado:** Transforma recuentos administrativos internos en indicadores demográficos reales per cápita (`camas_por_1000_hab`) y densidades territoriales (`capacidad_por_1000_km2`). Cuenta con mecanismo de reintentos exponenciales y respaldo en caché local offline (`data/raw/api_departments_raw.json`).
 
 ---
 
-## 11. ETL Pipeline
+## 5. Arquitectura del Sistema de Datos
 
-### 10.1 Architecture
+```mermaid
+flowchart TD
+    subgraph Sources [Capa de Fuentes de Datos]
+        CSV1["Afiliados SGSSS (CSV, 3.369 filas)"]
+        CSV2["Prestadores REPS (CSV, 41.427 filas)"]
+        API["API Colombia REST (/Department, /Region)"]
+    end
 
-![Star Schema](diagrams/diagramArchitecture.png)
+    subgraph Ingestion [Ingesta y Extracción Observable]
+        E_PRIM["extract_primary (Pandas + Batch Meta)"]
+        E_API["extract_api (HTTP + Reintentos Selectivos + Caché)"]
+    end
 
+    subgraph RawGates [Puertas de Validación GX en Crudo]
+        GX1["validate_primary_raw (Gate 1: DQ-01..DQ-05)"]
+        GX2["validate_api_raw (Gate 2: DQ-06..DQ-07)"]
+    end
 
-### 10.2 Extract (`src/extract.py`)
-- Reads raw CSV files with `pd.read_csv(dtype=str)` to preserve original formatting
-- Renames columns from Spanish to English for consistency
-- No business transformations applied during extraction
+    subgraph Transform [Transformación y Armonización]
+        TI["transform_and_integrate\n(Contrato DANE, Limpieza, Claves Subrogadas)"]
+    end
 
-### 10.3 Transform (`src/transform.py`)
+    subgraph PreparedGate [Puerta de Validación de Datos Preparados]
+        GX3["validate_prepared (Gate 3: DQ-08..DQ-12)\nUnicidad de Grano + Integridad FK + Reconciliación"]
+    end
 
-**Data Preparation:**
-- Removes thousand-separator periods from `NumPersonas`, converts to integer
-- Normalizes department and municipality names (accent removal, uppercase, alias mapping)
-- Maps departments to regions using `REGION_MAP` (after normalization, ensuring correct mapping)
-- Drops records with "NO APLICA" departments and zero affiliates
-- Extracts numeric digits from phone numbers
-- Removes commas from NIT values
+    subgraph Storage [Data Warehouse PostgreSQL 16]
+        PG[(salud_colombia)]
+        D_GEO[(dim_geografia unificada + API)]
+        D_TIME[(dim_time)]
+        D_REG[(dim_regime)]
+        D_FAC[(dim_facility)]
+        D_CAP[(dim_capacity_type)]
+        F_AFF[(fact_affiliates - 3.369 filas)]
+        F_CAP[(fact_facility_capacity - 31.496 filas)]
+        V_R6[Vista v_r6_demographic_coverage]
+        V_R7[Vista v_r7_territorial_capacity]
+    end
 
-**Dimensional Transformation:**
-- Builds **5 dimension tables** with surrogate keys (`sk_*`): `dim_time`, `dim_geografia`, `dim_regime`, `dim_facility`, `dim_capacity_type`
-- Constructs unified `dim_geografia` from both affiliates and facilities datasets, enriched with API Colombia data (capital, surface, population, municipalities_count, phone_prefix, region_api)
-- `dim_facility` references `dim_geografia` via `sk_geografia` FK
-- Aggregates `fact_affiliates` to quarterly granularity
-- Maps facility composite keys (provider_code + municipality) to surrogate keys
-- Both fact tables reference `dim_geografia` directly for geographic analysis
+    subgraph Orchestration [Apache Airflow 3.1.8 TaskFlow]
+        DAG["DAG: etl_ods3_salud_colombia\n8 Tareas Consecutivas | Fallo Inmediato retries=0"]
+    end
 
-### 10.4 Validate (`src/validate.py`)
+    subgraph BI [Capa de Consumo y Business Intelligence Dual]
+        PGRST["PostgREST (:3000)\nEndpoints REST JSON"]
+        PBI["Power BI Desktop\n(Conector Web REST)"]
+        SUP["Apache Superset (:8088)\nDashboard ODS 3 R1-R7"]
+    end
 
-| Rule | Description |
-|---|---|
-| **Raw Validation** | Validates raw data before transformation: required columns, no negative NumPersonas, valid regime codes (S/C/E/I) |
-| **FK Integrity** | All foreign keys in fact tables reference existing surrogate keys in dimension tables |
-| **Null Measures** | No null values in measure columns (`numero_afiliados`, `capacity_amount`) |
-| **Negative Measures** | No negative values in measure columns |
-| **Duplicate Keys** | No duplicate composite keys in fact tables |
-| **Sum Consistency** | Total `numero_afiliados` in fact table matches source total within 1% tolerance |
-
-### 10.5 Load (`src/load.py`)
-- Connects to PostgreSQL using `psycopg2`
-- Executes `sql/init.sql` to reset schema (idempotent DROP + CREATE)
-- Loads dimensions first, then fact tables
-- Uses `ON CONFLICT DO NOTHING` for idempotency
-- Resets serial sequences after load (`setval`)
-- Single transaction: commits on success, rolls back on failure
-- **CSV Export:** After PostgreSQL load, exports all dimension and fact tables as individual CSV files to `data/processed/` for alternative BI tool ingestion (e.g., Power BI direct CSV import)
-
----
-
-## 12. Requirements-to-Model Validation
-
-| Requirement | Dimension(s) | Measure(s) | Expected Query/KPI | Supported? |
-|---|---|---|---|---|
-| **R1** — Affiliates by regime | dim_regime, dim_time | numero_afiliados | Total affiliates grouped by regime description | Yes |
-| **R2** — Department density | dim_geografia, dim_time | numero_afiliados | Top/bottom departments by total affiliates | Yes |
-| **R3** — Facilities by nature/level | dim_facility, dim_capacity_type | capacity_amount | Count of facilities by nature; capacity by care level | Yes |
-| **R4** — Capacity per affiliate | dim_facility, dim_geografia | capacity_amount, numero_afiliados | capacity_amount / numero_afiliados ratio by department | Yes |
-| **R5** — Regime × Geography | dim_regime, dim_geografia | numero_afiliados | Subsidized vs Contributory distribution across departments | Yes |
-
-
----
-
-## 13. Analytical Queries and KPIs
-
-All queries run against the PostgreSQL Data Warehouse.
-
-### R1 — Total Affiliates by Regime Type
-
-```sql
-SELECT
-    r.description AS regime,
-    SUM(f.numero_afiliados) AS total_affiliates,
-    ROUND(SUM(f.numero_afiliados) * 100.0 / SUM(SUM(f.numero_afiliados)) OVER(), 2) AS pct_share
-FROM fact_affiliates f
-JOIN dim_regime r ON f.sk_regime = r.sk_regime
-GROUP BY r.description
-ORDER BY total_affiliates DESC;
+    CSV1 & CSV2 --> E_PRIM --> GX1
+    API --> E_API --> GX2
+    GX1 & GX2 -- Ambas puertas aprobadas --> TI
+    TI --> GX3
+    GX3 -- Valida Grano y Reconciliación --> PG
+    PG --> D_GEO & D_TIME & D_REG & D_FAC & D_CAP & F_AFF & F_CAP
+    D_GEO & F_AFF --> V_R6
+    D_GEO & F_CAP --> V_R7
+    V_R6 & V_R7 --> PGRST --> PBI
+    PG --> SUP
+    DAG -. Orquesta y Observa .-> Ingestion & RawGates & Transform & PreparedGate & Storage
 ```
 
-| DW Tables | Metric/KPI | Main Result |
-|---|---|---|
-| fact_affiliates, dim_regime | Total affiliates per regime; percentage share | Subsidized and Contributory regimes are nearly balanced nationally (~48% vs ~47.5%), with Special and Individual regimes representing <5%. The real disparity emerges at the regional level (see R5). |
+---
 
-### R2 — Top and Bottom Departments by Affiliate Count
+## 6. Perfilamiento de Datos y Hallazgos Cuantitativos
 
-```sql
-SELECT department, total_affiliates, 'Top 10' AS category FROM (
-    SELECT g.departamento AS department, SUM(f.numero_afiliados) AS total_affiliates
-    FROM fact_affiliates f
-    JOIN dim_geografia g ON f.sk_geografia = g.sk_geografia
-    GROUP BY g.departamento
-    ORDER BY total_affiliates DESC
-    LIMIT 10
-) top10
-UNION ALL
-SELECT department, total_affiliates, 'Bottom 10' AS category FROM (
-    SELECT g.departamento AS department, SUM(f.numero_afiliados) AS total_affiliates
-    FROM fact_affiliates f
-    JOIN dim_geografia g ON f.sk_geografia = g.sk_geografia
-    GROUP BY g.departamento
-    ORDER BY total_affiliates ASC
-    LIMIT 10
-) bottom10
-ORDER BY category DESC, total_affiliates DESC;
+El perfilamiento automatizado se ejecuta mediante `src/profile_data.py` y genera evidencia trazable en `docs/evidence/profiling/data_profiling_evidence.json`:
+
+1. **Afiliados al SGSSS:**
+   - 3.369 filas completas. Sin nulos en `department`, `municipality`, `regime_id` ni `num_persons`.
+   - Distribución de regímenes: Subsidiado (1.124), Contributivo (1.122), Especial (1.115), Excepción (8).
+   - Total nacional de personas: **51.182.238 afiliados**.
+2. **Prestadores e Infraestructura REPS:**
+   - 41.427 filas crudas reducidas a 10.921 sedes prestadoras únicas tras deduplicar registros multi-servicio.
+   - Naturaleza: 25.067 privadas (60.5%), 16.174 públicas (39.0%), 186 mixtas (0.5%).
+   - Nivel de atención: Nivel 1 (12.588), Nivel 2 (2.424), Nivel 3 (1.149), 25.266 sin nivel (atención básica ambulatoria).
+3. **Integración con API Colombia:**
+   - Coincidencia cruda sin normalización: **93.94%** (31 de 33 departamentos cruzaron directamente).
+   - Inconsistencias nominales detectadas: `BOGOTA` (API) vs `BOGOTA D.C.` (DANE) y `SAN ANDRES Y PROVIDENCIA` (API) vs `SAN ANDRES` (DANE).
+   - Coincidencia post-armonización con Contrato de Integración: **100.0%** (33/33 departamentos cruzados exitosamente con población y superficie).
+
+---
+
+## 7. Catálogo de Reglas de Calidad (DQ-01 a DQ-12)
+
+Cada regla cuenta con severidad tipada, expectativa matemática de Great Expectations y acción determinista en el pipeline:
+
+| ID | Capa / Dataset | Dimensión | Atributo Evaluado | Regla de Calidad | Expectativa Great Expectations | Umbral | Severidad | Acción de Pipeline | Reqs |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **DQ-01** | Raw Afiliados | Completitud | Columnas maestras | Las 8 columnas del esquema de afiliados no deben faltar ni ser nulas | `expect_table_columns_to_match_set` | 100% | **CRÍTICA** | Bloquea transformación | R1, R2, R5, R6 |
+| **DQ-02** | Raw Afiliados | Validez | `regime_id` | Código de régimen debe pertenecer al conjunto permitido `{'S', 'C', 'E', 'I'}` | `expect_column_values_to_be_in_set` | 100% | **CRÍTICA** | Bloquea transformación | R1, R5 |
+| **DQ-03** | Raw Afiliados | Validez | `num_persons` | Número de afiliados debe ser entero positivo o cero (no negativo) | `expect_column_values_to_be_between` | 100% | **CRÍTICA** | Bloquea transformación | R1, R2, R6 |
+| **DQ-04** | Raw REPS | Completitud | `provider_code, capacity` | Identificador de prestador y capacidad instalada obligatorios | `expect_column_values_to_not_be_null` | >= 99.5% | **CRÍTICA** | Bloquea transformación | R3, R4, R7 |
+| **DQ-05** | Raw REPS | Validez | `installed_capacity` | La medida de capacidad instalada debe ser no negativa (`>= 0`) | `expect_column_values_to_be_between` | 100% | **CRÍTICA** | Bloquea transformación | R3, R4, R7 |
+| **DQ-06** | Raw API | Completitud | `department_name, api_id` | Nombres y llaves primarias de departamento no nulos en el payload REST | `expect_column_values_to_not_be_null` | 100% | **CRÍTICA** | Bloquea rama de API | R6, R7 |
+| **DQ-07** | Raw API | Validez | `population, surface` | Población censal y superficie territorial deben ser estrictamente positivas (`> 0`) | `expect_column_values_to_be_between` | 100% | **CRÍTICA** | Bloquea rama de API | R6, R7 |
+| **DQ-08** | Integración | Integridad | Cruce DANE vs API | Al menos 95% de los departamentos del DW deben enriquecerse con la API | `expect_integration_key_match_rate` | >= 95.0% | **CRÍTICA** | Previene carga a DW | R6, R7 |
+| **DQ-09** | Prepared Hechos | Unicidad / Grano | `(time, geo, regime)` | El grano declarado de `fact_affiliates` debe ser estrictamente único sin duplicados | `expect_compound_columns_to_be_unique` | 100% | **CRÍTICA** | Previene carga a DW | R1, R2, R6 |
+| **DQ-10** | Prepared Hechos | Unicidad / Grano | `(time, fac, cap, geo)` | El grano declarado de `fact_facility_capacity` debe ser estrictamente único | `expect_compound_columns_to_be_unique` | 100% | **CRÍTICA** | Previene carga a DW | R3, R4, R7 |
+| **DQ-11** | Prepared Hechos | Integridad Ref. | Claves Foráneas (FK) | Cero registros huérfanos: toda FK en hechos debe existir en su dimensión | `expect_foreign_keys_to_exist` | 100% | **CRÍTICA** | Previene carga a DW | Todos (R1-R7) |
+| **DQ-12** | Prepared Hechos | Reconciliación | `numero_afiliados` | La suma total de afiliados en el hecho debe reconciliar con la fuente cruda | `expect_sum_reconciliation` | Tol < 0.01% | **CRÍTICA** | Previene carga a DW | R1, R6 |
+
+---
+
+## 8. Diseño de Validación con Great Expectations
+
+El framework de validación opera mediante tres compuertas desacopladas en `src/quality/`:
+- **Gate 1 (`primary_raw_suite`):** Evalúa DQ-01 a DQ-05. Serializa evidencia a `docs/evidence/gx/primary_raw_results.json`.
+- **Gate 2 (`api_raw_suite`):** Evalúa DQ-06 y DQ-07. Serializa evidencia a `docs/evidence/gx/api_raw_results.json`.
+- **Gate 3 (`prepared_gate_suite`):** Evalúa DQ-08 a DQ-12 antes de abrir la transacción de carga al almacén. Serializa a `docs/evidence/gx/prepared_results.json`.
+- **Interrupción Determinista:** Si se produce cualquier fallo clasificado como `CRÍTICA`, el validador emite `CriticalQualityError`. En Airflow, esto marca inmediatamente el TaskInstance en estado `FAILED` impidiendo que las tareas aguas abajo lleguen a ejecutarse.
+
+---
+
+## 9. Estrategia de Transformación y Contrato de Integración DANE
+
+- **Clave de Integración Principal:** Código DANE Departamental de dos dígitos (`codigo_dane_depto`, ej. `'05'` para Antioquia, `'11'` para Bogotá D.C., `'76'` para Valle del Cauca).
+- **Normalización de Texto:** Limpieza de tildes (descomposición canónica Unicode NFKD), conversión a mayúsculas estrictas y eliminación de espacios redundantes.
+- **Diccionario de Alias (`API_ALIAS`):**
+  - `'BOGOTA'` (API) → `'BOGOTA D.C.'` (DANE `'11'`)
+  - `'SAN ANDRES Y PROVIDENCIA'` (API) → `'SAN ANDRES'` (DANE `'88'`)
+- **Registros Sin Departamento:** Se clasifican bajo la clave surrogate estándar `'SIN DEPARTAMENTO'` (`codigo_dane_depto = '00'`) para aislar 1.315.701 afiliados nacionales sin municipio específico, asegurando reconciliación matemática exacta (DQ-12).
+
+---
+
+## 10. Modelo Dimensional Conforme (Data Warehouse)
+
+El almacén implementa un **Esquema en Estrella Conforme (Conformed Star Schema)** en PostgreSQL 16:
+
+- **`dim_time` (2 registros):** `sk_time` (PK), año, mes, trimestre, semestre, periodo código (`2022-Q2`, `2022-Q4`).
+- **`dim_geografia` (2.240 registros):** `sk_geografia` (PK), código DANE municipio, municipio, código DANE departamento, departamento, región natural, y enriquecimiento de API Colombia: `capital`, `surface` (km²), `population`, `municipalities_count`, `phone_prefix`, `region_api`.
+- **`dim_regime` (4 registros):** `sk_regime` (PK), código (`S`, `C`, `E`, `I`), descripción (`SUBSIDIZED`, `CONTRIBUTORY`, `SPECIAL`, `EXCEPTION`).
+- **`dim_facility` (10.921 registros):** `sk_facility` (PK), código de prestador, nombre, NIT, naturaleza jurídica, nivel de atención (1, 2, 3), dirección, `sk_geografia` (FK).
+- **`dim_capacity_type` (63 registros):** `sk_capacity_type` (PK), grupo de capacidad (`CAMAS`, `SALAS`, `CONSULTORIOS`, `AMBULANCIAS`, `CAMILLAS`), descripción detallada del servicio.
+- **`fact_affiliates` (3.369 filas):** `sk_affiliate` (PK), `sk_time` (FK), `sk_geografia` (FK), `sk_regime` (FK), `numero_afiliados` (Measure).
+- **`fact_facility_capacity` (31.496 filas):** `sk_capacity` (PK), `sk_time` (FK), `sk_facility` (FK), `sk_capacity_type` (FK), `sk_geografia` (FK), `capacity_amount` (Measure).
+- **Vistas Analíticas:**
+  - `v_r6_demographic_coverage`: Cruce directo de afiliados SGSSS con población censal oficial de API Colombia.
+  - `v_r7_territorial_capacity`: Cálculo de camas hospitalarias por cada 1.000 habitantes y densidad física por km².
+  - `v_affiliates_summary` & `v_facility_summary`: Vistas desnormalizadas optimizadas para consumo BI.
+
+---
+
+## 11. Orquestación y Políticas de Reintento con Apache Airflow 3.1.8
+
+El DAG `etl_ods3_salud_colombia` (`dags/etl_ods3_salud_dag.py`) está implementado mediante la API TaskFlow (`@dag`, `@task`) con 8 tareas estructuradas:
+
+```text
+extract_primary ──> validate_primary_raw ──┐
+                                           ├──> transform_and_integrate ──> validate_prepared ──> load_dimensional_dw ──> verify_dw_and_kpis
+extract_api     ──> validate_api_raw     ──┘
 ```
 
-| DW Tables | Metric/KPI | Main Result |
-|---|---|---|
-| fact_affiliates, dim_geografia | Top and bottom departments by affiliate volume | Bogotá D.C., Antioquia, and Valle del Cauca concentrate the largest affiliate populations. Smaller departments like Vaupés, Guainía, and Vichada have the fewest affiliates, reflecting low population density. |
-
-### R3 — Facilities by Nature and Care Level
-
-```sql
-SELECT
-    fc.nature,
-    fc.care_level,
-    COUNT(DISTINCT fc.sk_facility) AS facility_count,
-    SUM(c.capacity_amount) AS total_capacity
-FROM fact_facility_capacity c
-JOIN dim_facility fc ON c.sk_facility = fc.sk_facility
-GROUP BY fc.nature, fc.care_level
-ORDER BY fc.nature, fc.care_level;
-```
-
-| DW Tables | Metric/KPI | Main Result |
-|---|---|---|
-| fact_facility_capacity, dim_facility | Facility count and capacity by nature and care level | Public facilities dominate high-complexity care (levels 3–4), while private facilities concentrate in lower-complexity services (levels 1–2). |
-
-### R4 — Installed Capacity per Affiliate by Department
-
-```sql
-WITH capacity_by_dept AS (
-    SELECT
-        g.departamento AS department,
-        SUM(c.capacity_amount) AS total_capacity
-    FROM fact_facility_capacity c
-    JOIN dim_geografia g ON c.sk_geografia = g.sk_geografia
-    WHERE g.departamento NOT IN ('SIN DEPARTAMENTO')
-    GROUP BY g.departamento
-),
-affiliates_by_dept AS (
-    SELECT
-        g.departamento AS department,
-        SUM(f.numero_afiliados) AS total_affiliates
-    FROM fact_affiliates f
-    JOIN dim_geografia g ON f.sk_geografia = g.sk_geografia
-    WHERE g.departamento NOT IN ('SIN DEPARTAMENTO')
-    GROUP BY g.departamento
-)
-SELECT
-    COALESCE(a.department, c.department) AS department,
-    COALESCE(c.total_capacity, 0) AS total_capacity,
-    COALESCE(a.total_affiliates, 0) AS total_affiliates,
-    ROUND(COALESCE(c.total_capacity, 0)::numeric / NULLIF(COALESCE(a.total_affiliates, 0), 0), 4) AS capacity_per_affiliate
-FROM affiliates_by_dept a
-FULL OUTER JOIN capacity_by_dept c ON a.department = c.department
-ORDER BY capacity_per_affiliate ASC;
-```
-
-| DW Tables | Metric/KPI | Main Result |
-|---|---|---|
-| fact_affiliates, fact_facility_capacity, dim_geografia | Capacity-to-affiliate ratio by department | Smaller departments show highly variable ratios; some have excess capacity while others face critical shortages. SIN DEPARTAMENTO (non-geolocalized records) is excluded from this analysis. |
-
-### R5 — Regime Distribution by Geographic Region
-
-```sql
-SELECT
-    g.region,
-    r.description AS regime,
-    SUM(f.numero_afiliados) AS total_affiliates,
-    ROUND(SUM(f.numero_afiliados) * 100.0 / SUM(SUM(f.numero_afiliados)) OVER(PARTITION BY g.region), 2) AS pct_within_region
-FROM fact_affiliates f
-JOIN dim_geografia g ON f.sk_geografia = g.sk_geografia
-JOIN dim_regime r ON f.sk_regime = r.sk_regime
-GROUP BY g.region, r.description
-ORDER BY g.region, total_affiliates DESC;
-```
-
-| DW Tables | Metric/KPI | Main Result |
-|---|---|---|
-| fact_affiliates, dim_geografia, dim_regime | Affiliate distribution by region and regime; percentage within each region | The Andina region concentrates the majority of affiliates. Pacifico shows a strong Subsidized majority (driven by Valle del Cauca, Chocó, and Nariño). Amazonia has the highest proportional Subsidized concentration. |
+- **Manejo Selectivo de Reintentos:**
+  - Tareas transitorias de red (`extract_api`): `retries=2, retry_delay=15s, exponential_backoff=True` (ante fallos 503, timeouts o límites de tasa).
+  - Tareas deterministas de datos (`validate_*`, `transform_*`, `load_*`): `retries=0`. Un error de calidad no se resuelve reintentando; se aborta de inmediato.
+- **Paso de Datos:** XCom transporta únicamente diccionarios ligeros con metadatos de lote, firmas de validación y conteos.
 
 ---
 
-## 14. ETL Validation Rules
+## 12. Pruebas Obligatorias de Confiabilidad (Tests A, B y C)
 
-| Rule Category | Validation | Implementation |
-|---|---|---|
-| **Row Counts** | Source row counts match transformed record counts | Logged at each ETL phase; notebook comparison |
-| **Critical Nulls** | No nulls in PK/FK columns or measures | `validate_measures()` checks for nulls in `numero_afiliados` and `capacity_amount` |
-| **Uniqueness** | No duplicate composite keys in fact tables | `validate_no_duplicates()` on (sk_time, sk_geografia, sk_regime) and (sk_time, sk_facility, sk_capacity_type) |
-| **PK/FK Integrity** | All fact FKs reference existing dimension SKs | `validate_foreign_keys()` checks each FK against its dimension |
-| **Referential Integrity** | Dimension surrogate keys are sequential and non-null | Serial sequences reset via `setval()` after load |
-| **Business Rules** | NumPersonas > 0; valid regime codes (S, C, E, I) | Enforced during transform; validated in `validate_raw_affiliates()` |
-| **Reconciliation** | Sum of fact measure matches source total within 1% | `validate_sum_consistency()` compares fact total vs. source sum |
-| **Row Count Recovery** | Unique facilities in fact table match source unique facilities | `validate_row_count()` with `nunique('sk_facility')` vs `provider_code.nunique()` |
+La suite de confiabilidad vive en `scripts/run_reliability_tests.py` y se ejecuta mediante `./run.sh validate` (o `reliability`):
 
----
+### 12.1 Test A: Corrida Exitosa de Extremo a Extremo
+- **Ejecución:** Extrae fuentes primarias y API, supera Gates 1, 2 y 3, carga las 5 dimensiones y 2 tablas de hechos, y valida las vistas R6 y R7.
+- **Resultado:** 100% de reglas satisfechas, 3.369 filas de afiliados y 31.496 hechos de capacidad cargados exitosamente.
 
-## 14.1 Data Quality Verification Results
+### 12.2 Test B: Falla Controlada de Calidad Crítica
+- **Simulación:** Inyecta la violación de la regla crítica `DQ-02` (código de régimen corrupto en el crudo primario).
+- **Comportamiento Observado:**
+  1. `extract_primary` finaliza con éxito.
+  2. `validate_primary_raw` detecta el valor corrupto, registra la evidencia en `docs/evidence/gx/primary_raw_results.json` y levanta `CriticalQualityError`.
+  3. La tarea pasa al estado `FAILED`.
+  4. La tarea dependiente `transform_and_integrate` queda bloqueada (`UPSTREAM_FAILED`).
+  5. Ningún dato corrupto ingresa al Data Warehouse.
 
-After the full ETL pipeline execution, the following results confirm data integrity:
-
-### Load Summary
-
-| Table | Records | Description |
-|---|---|---|
-| dim_time | 2 | Q2 2022 (affiliates) + Q4 2022 (facilities) |
-| dim_geografia | 2,240 | All municipalities with DANE codes, region, and API Colombia enrichment (capital, surface, population) |
-| dim_regime | 4 | Subsidized, Contributory, Special, Individual |
-| dim_facility | 10,921 | Unique healthcare providers (IPS) with sk_geografia FK |
-| dim_capacity_type | 63 | CAMAS/SALAS × TPR/Adultos/Pediátrica combinations |
-| fact_affiliates | 3,369 | Quarterly granularity (geography + regime) |
-| fact_facility_capacity | 31,496 | Capacity rows per facility + capacity type + geography (deduplicated) |
-
-### Validation Results
-
-| Check | Result |
-|---|---|
-| FK nulls (fact_affiliates) | 0 |
-| FK nulls (fact_facility_capacity) | 0 |
-| Negative measures | 0 |
-| Duplicate fact keys | 0 |
-| Sum consistency (affiliates) | 51,182,238 = 51,182,238 (100% match) |
-| Unmapped municipalities | 0 |
-| Total validation errors | **0** |
-
-### Data Quality Fixes Applied
-
-| Issue | Root Cause | Fix |
-|---|---|---|
-| 5,072 facility rows silently dropped | Special health districts (Cali, Cartagena, Barranquilla, Santa Marta, Buenaventura) reported as "department" in REPS | `DISTRICT_TO_DEPT` mapping in `config.py` redirects to real departments |
-| 80 municipalities unmapped | CAUCA missing from `DEPT_DANE_CODES`; facility-only municipalities not in affiliates dataset | Added CAUCA (code 19); unified `dim_geografia` now merges both datasets |
-| 13,970 duplicate fact keys | Raw REPS data has duplicate rows per facility + capacity type | `build_fact_facility_capacity` now aggregates with `groupby().sum()` |
-| 1,315,701 affiliates lost ("NO APLICA") | `DEPT_NORMALIZE['NO APLICA'] = None` caused silent drop | Map to "SIN DEPARTAMENTO" with DANE code "00"; `raw_total` computed before `clean_affiliates()` |
-| Cauca without region | CAUCA absent from `REGION_MAP` | Added `'CAUCA': 'Pacifico'` |
-| Validation false positive | `len(df_facilities)` compared total rows (41,427) against unique facilities (10,921) | Changed to `provider_code.nunique()` for apples-to-apples comparison |
-| CASANARE wrong DANE code | CASANARE had code 19 (duplicate with CAUCA) | Corrected to 85 |
-| Non-deterministic hash | Python `hash()` varies across runs | Replaced with `hashlib.md5()` |
-| 29 facilities from AMAZONAS/GUAVIARE dropped | `DEPT_DANE_CODES` missing these two departments | Added `'AMAZONAS': '91'`, `'GUAVIARE': '95'` + new `validate_department_consistency()` check |
-| Valle del Cauca (4.6M affiliates) mapped to "Sin Region" | `region` calculated in `extract.py` before `DEPT_NORMALIZE` corrected "VALLE" → "VALLE DEL CAUCA" | Moved `region` calculation to `clean_affiliates()` after normalization; added `validate_department_region_consistency()` |
+### 12.3 Test C: Re-ejecución Segura e Idempotencia
+- **Procedimiento:** Ejecuta la carga completa (Lote 1), registra conteos y sumas métricas, y vuelve a ejecutar la carga completa con el mismo lote (Lote 2).
+- **Verificación:**
+  - `fact_affiliates`: Filas Antes = 3.369 | Filas Después = 3.369 (Cero duplicados).
+  - Suma de afiliados: 51.182.238 antes y después (Invariante métrica perfecta).
+  - `fact_facility_capacity`: Filas Antes = 31.496 | Filas Después = 31.496.
 
 ---
 
-## 15. Business Intelligence
+## 13. Capa de Consumo y Business Intelligence (PostgREST, Power BI, Superset)
 
-A Power BI dashboard connects to the PostgreSQL Data Warehouse and provides:
-
-- **Geographic Analysis:** Department-level map visualization showing affiliate density and capacity distribution.
-- **Temporal Analysis:** Quarterly trend of affiliates by regime type.
-- **Comparative Analysis:** Public vs. private facility distribution across care levels.
-- **KPIs:** Total affiliates nationally, total installed capacity, capacity-to-affiliate ratio.
-- **Filters:** By department, region, regime type, facility nature, and time period.
-
-**Data Loading Options for Power BI:**
-1. **PostgreSQL connection** (recommended): Direct connection to the Data Warehouse using the PostgreSQL connector. See "Connecting Power BI (Windows VM) to PostgreSQL (Linux Host)" below for VM setup instructions.
-2. **CSV import**: Alternative — load individual CSV files from `data/processed/`. Each CSV includes surrogate keys for joining tables in Power BI.
-
-**CSV files available in `data/processed/`:**
-
-| File | Records | Content |
-|------|---------|---------|
-| `dim_time.csv` | 2 | Q2 2022 (affiliates) + Q4 2022 (facilities) |
-| `dim_geografia.csv` | 2,240 | Municipalities with DANE codes, region, and API Colombia enrichment |
-| `dim_regime.csv` | 4 | Subsidized, Contributory, Special, Individual |
-| `dim_facility.csv` | 10,921 | Healthcare providers (IPS) with attributes and sk_geografia FK |
-| `dim_capacity_type.csv` | 63 | CAMAS/SALAS × TPR/Adultos/Pediátrica |
-| `fact_affiliates.csv` | 3,369 | Quarterly affiliate counts by geography/regime |
-| `fact_capacity.csv` | 31,496 | Capacity records by facility, type, and geography |
-
-> **Note:** Dashboard screenshots are saved in `visualizations/`. Source diagrams are in `diagrams/`.
-
-![Power BI Dashboard](visualizations/dashboard.png)
+El Data Warehouse ofrece **dos canales de visualización**:
+1. **PostgREST (Puerto 3000):** Expone las tablas y vistas del DW mediante una API REST HTTP/JSON. Permite a Power BI Desktop en Windows o Linux conectarse nativamente mediante `Get Data` → `Web` sin configurar drivers ODBC ni exponer credenciales maestras.
+2. **Apache Superset (Puerto 8088):** Plataforma analítica web lista para producción. El script `scripts/superset_bootstrap.py` configura automáticamente la fuente de datos, datasets y el dashboard interactivo *ODS 3 - Salud Colombia: Disparidades y Cobertura Territorial (R1–R7)*.
 
 ---
 
-## 16. Analytical Interpretation
+## 14. Matriz de Trazabilidad de Extremo a Extremo
 
-### Finding 1: Subsidized Regime Concentration in Peripheral Regions
-
-**What does the data show?** At the national level, Subsidized (~48%) and Contributory (~47.5%) regimes are nearly balanced. However, the geographic distribution reveals sharp disparities: the Subsidized regime is proportionally much higher in the Pacifico (Chocó, Valle del Cauca, Nariño) and Amazonia regions, while the Contributory regime dominates in Andina and Caribe. This regional concentration — rather than national majority — is the defining characteristic of the Colombian healthcare system's affiliation pattern.
-
-**Which requirement does it address?** R5 — Relationship between regime type and geographic distribution.
-
-**Why is it relevant in the Colombian context?** The Subsidized regime covers the lowest-income population. Its disproportionate concentration in peripheral regions (Pacifico, Amazonia) suggests these populations depend heavily on state-funded healthcare. However, these same regions often have fewer healthcare facilities, creating an access gap between affiliation and actual service delivery.
-
-**What decision or further investigation could it support?** Target infrastructure investment in departments with high Subsidized affiliation but low capacity-to-affiliate ratios. Investigate whether Subsidized affiliates in these regions face longer wait times or travel distances.
-
-### Finding 2: Capacity-to-Affiliate Ratio Disparity Across Departments
-
-**What does the data show?** There is significant variation in the capacity-to-affiliate ratio across departments. Some departments (e.g., Amazonas, Vichada) show high capacity per affiliate due to low population density, while urban departments (Bogotá, Antioquia) show lower ratios despite having more absolute infrastructure.
-
-**Which requirement does it address?** R4 — Compare installed capacity per affiliate across departments.
-
-**Why is it relevant in the Colombian context?** Colombia's healthcare infrastructure follows population demand, but rural and remote departments may maintain capacity that exceeds local demand due to government investment programs. Conversely, rapidly growing urban areas may face infrastructure deficits.
-
-**What decision or further investigation could it support?** Guide Minsalud's infrastructure expansion plans by identifying departments where capacity is genuinely insufficient vs. where high ratios reflect low utilization. Support decisions about facility relocation or mobile health units.
-
-### Finding 3: Public-Private Mix Varies by Care Complexity
-
-**What does the data show?** Public healthcare facilities dominate at higher care levels (3 and 4 — hospital and specialized care), while private facilities are more prevalent at lower care levels (1 and 2 — basic and intermediate care). A small number of facilities (15) report as "Mixta" (mixed nature), representing a marginal third category.
-
-**Which requirement does it address?** R3 — Distribution of healthcare facilities by nature and care level.
-
-**Why is it relevant in the Colombian context?** Colombia's healthcare system relies on private providers (IPS) contracted by EPS. The data reveals that complex, high-cost care remains predominantly public, while the private sector focuses on lower-complexity, higher-volume services. This has implications for referral pathways and waiting times.
-
-**What decision or further investigation could it support?** Inform public-private partnership strategies. Evaluate whether incentivizing private investment in higher-complexity care could reduce burden on public hospitals. Assess geographic gaps where neither public nor private facilities provide adequate coverage.
+| Req | Pregunta Analítica | Datos Requeridos | Fuente | Riesgo de Calidad | Regla DQ | Expectativa GX | Transformación / Integración | Elemento en DW | KPI / Visualización |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **R1** | ¿Cuál es la participación por régimen en el SGSSS? | `regime_id, num_persons` | CSV Afiliados | Códigos de régimen inválidos o nulos | DQ-01, DQ-02, DQ-03 | `expect_column_values_to_be_in_set` | Normalización a descripción (`REGIME_MAP`) | `dim_regime`, `fact_affiliates` | Total afiliados y % share por régimen |
+| **R2** | ¿Cuáles departamentos concentran mayor y menor volumen de afiliados? | `department, num_persons` | CSV Afiliados | Nombres departamentales heterogéneos | DQ-01 | `expect_column_values_to_not_be_null` | `DEPT_NORMALIZE` a clave DANE oficial | `dim_geografia`, `fact_affiliates` | Ranking Top 10 y Bottom 10 de afiliados |
+| **R3** | ¿Cómo se distribuyen las IPS por naturaleza y nivel de complejidad? | `nature, care_level, capacity` | CSV REPS | IPS sin naturaleza o niveles fuera de rango | DQ-04, DQ-05 | `expect_column_values_to_not_be_null` | Limpieza de caracteres y mapeo de naturaleza | `dim_facility`, `fact_facility_capacity` | Conteo de IPS y capacidad instalada |
+| **R4** | ¿Cuál es la capacidad hospitalaria por afiliado departamental? | `capacity, num_persons, department` | REPS + Afiliados CSV | Asignación geográfica inconsistente | DQ-04, DQ-11 | `expect_foreign_keys_to_exist` | Cruce dimensional sobre `dim_geografia` | `dim_geografia`, `fact_affiliates`, `fact_facility_capacity` | Ratio de capacidad por afiliado |
+| **R5** | ¿Existe inequidad territorial en la penetración de regímenes por región? | `region, regime_id, num_persons` | CSV Afiliados | Falta de homologación de regiones naturales | DQ-01, DQ-02 | `expect_column_values_to_be_in_set` | Asignación de departamentos a macro-regiones | `dim_geografia`, `dim_regime`, `fact_affiliates` | Proporción Subsidiado vs Contributivo |
+| **R6** | ¿Cuál es la tasa real de cobertura frente a la población censal oficial? | `num_persons` + `population` (API) | CSV Afiliados + API Colombia | Desalineación de nombres entre DANE y API | DQ-06, DQ-07, DQ-08 | `expect_integration_key_match_rate` | Contrato DANE: Armonización con `API_ALIAS` | `dim_geografia.population`, `fact_affiliates`, `v_r6_demographic_coverage` | Cobertura % y brecha poblacional |
+| **R7** | ¿Cuál es la densidad hospitalaria por habitante y por km²? | `installed_capacity` + `population, surface` (API) | CSV REPS + API Colombia | Superficie o población no positiva en la API | DQ-05, DQ-07, DQ-08 | `expect_column_values_to_be_between` | Homologación departamental y agregación de camas | `dim_geografia.surface`, `fact_facility_capacity`, `v_r7_territorial_capacity` | Camas/1k hab y capacidad/1k km² |
 
 ---
 
-## 17. System Architecture
+## 15. Cómo Usar el Repositorio
 
-![System Architecture](diagrams/systemArchitecture.png)
----
-
-## 18. Data Warehouse Implementation
-
-### Prerequisites
-
-- Python 3.9+
-- PostgreSQL 12+ (or Docker/Podman)
-- Docker Desktop (Windows) / Docker Engine (Linux) or Podman
-
-### Option A: Local Setup (Without Docker)
+### 15.1 run.sh / run.bat (Punto de Entrada Único)
 
 ```bash
-# 1. Create database and user
-psql -U postgres -c "CREATE DATABASE salud_colombia;"
-psql -U postgres -c "CREATE USER etl_user WITH PASSWORD 'etl_password_2026';"
-psql -U postgres -c "GRANT ALL PRIVILEGES ON DATABASE salud_colombia TO etl_user;"
-psql -U postgres -d salud_colombia -c "GRANT USAGE, CREATE ON SCHEMA public TO etl_user;"
+./run.sh up              # Valida/libera puertos + compose up -d + bootstrap Superset
+./run.sh ports [--yes]   # Valida contenedores/puertos activos (5432, 8080, 8088, 3000)
+./run.sh down            # Baja todos los servicios del proyecto (volúmenes intactos)
+./run.sh stop            # Alias de down
+./run.sh fresh [--yes]   # Limpieza TOTAL y arranque desde cero (clean-all + up)
+./run.sh clean-all       # Limpieza TOTAL (contenedores, BDs, logs de Airflow y datos)
+./run.sh clean-airflow   # Limpia solo los logs de Airflow (logs/)
+./run.sh clean-db        # Detiene contenedores y borra volúmenes de PostgreSQL y Superset
+./run.sh clean-data      # Limpia datos intermedios y de salida (data/work, output)
+./run.sh clean           # Alias de clean-all
+./run.sh reset           # Alias de clean-all
+./run.sh trigger         # Dispara el DAG Test A (8/8 success en etl_ods3_salud_colombia)
+./run.sh trigger-bad     # Dispara el DAG Test B (falla controlada DQ-02: bloqueo en Gate 1)
+./run.sh validate        # Reporte automatizado de confiabilidad (Tests A, B y C)
+./run.sh test            # Ejecuta pytest completo (unidad + integración)
+./run.sh unit            # Ejecuta solo pruebas offline
+./run.sh status          # Muestra contenedores en ejecución y URLs de acceso
+./run.sh superset        # Re-ejecuta el bootstrap de Superset (idempotente)
+./run.sh logs            # Muestra logs en vivo de Airflow (scheduler y webserver)
+./run.sh smoke           # Pipeline local/contenedor sin Airflow (ejecución directa)
+./run.sh postgrest-test  # Prueba de conectividad REST a PostgREST
+./run.sh psql            # Abre consola interactiva psql en el DW salud_colombia
+```
 
-# 2. Install Python dependencies
-pip install -r requirements.txt
+En Windows: `run.bat up`, `run.bat ports`, `run.bat test`, `run.bat trigger`, etc. Los scripts detectan automáticamente si existe `podman compose`, `podman-compose` o `docker compose`.
 
-# 3. Initialize schema
-psql -U etl_user -d salud_colombia -f sql/init.sql
+---
 
-# 4. Run ETL
+### 15.2 Servicios, Puertos y Clientes (Host / VM Windows 11)
+
+| Puerto | Servicio | Contenedor | Consumidor Típico | Credenciales |
+| :--- | :--- | :--- | :--- | :--- |
+| **8080** | **Apache Airflow 3.1.8** — Web UI / API | `airflow-webserver` | Navegador | `admin` / `admin` |
+| **8088** | **Apache Superset 6.1.0** — Plataforma BI | `superset_salud` | Navegador (BI Principal) | `admin` / `admin` |
+| **3000** | **PostgREST REST API** | `postgrest_salud` | Power BI Desktop / Web Clients | Sin autenticación (rol `etl_user`) |
+| **5432** | **PostgreSQL 16** — Data Warehouse | `warehouse_salud` | Superset / DBeaver / psql | `etl_user` / `etl_password` (DB: `salud_colombia`) |
+
+Los puertos se publican en `0.0.0.0`, por lo que una máquina virtual (VM Windows 11) o cliente en la red local los alcanza directamente con la IP del host:
+
+| Parámetro | Valor (Host Local) | Valor (Desde VM Windows 11) |
+| :--- | :--- | :--- |
+| **Servidor / Host** | `localhost` | `192.168.122.1` (o IP LAN del host) |
+| **Base de Datos** | `salud_colombia` | `salud_colombia` |
+| **Usuario / Contraseña** | `etl_user` / `etl_password` | `etl_user` / `etl_password` |
+| **PostgREST Endpoint** | `http://localhost:3000` | `http://192.168.122.1:3000` |
+| **Apache Superset** | `http://localhost:8088` | `http://192.168.122.1:8088` (`admin` / `admin`) |
+| **Apache Airflow** | `http://localhost:8080` | `http://192.168.122.1:8080` (`admin` / `admin`) |
+
+*Verificación de conectividad desde Windows PowerShell:* `Test-NetConnection 192.168.122.1 -Port 5432` y `Invoke-RestMethod http://192.168.122.1:3000/v_r6_demographic_coverage?limit=1`.
+
+---
+
+### 15.3 Conexión con DBeaver (Explorar salud_colombia)
+
+Abra [DBeaver Community](https://dbeaver.io/download/) y cree una nueva conexión PostgreSQL:
+
+| Parámetro | Valor (Host Local) | Valor (Desde VM Windows) |
+| :--- | :--- | :--- |
+| **Host** | `localhost` | `192.168.122.1` |
+| **Puerto** | `5432` | `5432` |
+| **Database** | `salud_colombia` | `salud_colombia` |
+| **Username** | `etl_user` | `etl_user` |
+| **Password** | `etl_password` | `etl_password` |
+| **SSL** | Desactivar ("Use SSL" = Off) | Desactivar |
+
+**Verificación en la consola SQL de DBeaver:**
+```sql
+SELECT count(*) FROM fact_affiliates;          -- Debe devolver 3369
+SELECT sum(numero_afiliados) FROM fact_affiliates; -- Debe devolver 51182238
+SELECT count(*) FROM fact_facility_capacity;  -- Debe devolver 31496
+SELECT count(*) FROM dim_geografia;           -- Debe devolver 2240
+SELECT departamento, cobertura_afiliacion_pct, brecha_poblacional_no_afiliada
+FROM v_r6_demographic_coverage
+ORDER BY cobertura_afiliacion_pct DESC LIMIT 5;
+```
+
+---
+
+### 15.4 Conexión con Power BI Desktop (Vía PostgREST)
+
+1. Abra **Power BI Desktop**.
+2. Seleccione **Obtener datos (Get Data)** → **Web**.
+3. En la URL pegue el endpoint de PostgREST:
+   - Para R6: `http://localhost:3000/v_r6_demographic_coverage`
+   - Para R7: `http://localhost:3000/v_r7_territorial_capacity`
+4. Power BI cargará automáticamente la tabla en formato JSON estructurado sin requerir drivers ODBC de PostgreSQL.
+
+---
+
+### 15.5 Ejecución Manual (Sin run.sh)
+
+```bash
+# 1. Configurar variables de entorno
+cp .env.example .env
+
+# 2. Levantar servicios con Compose
+docker compose up -d postgres postgrest
+docker compose up -d superset-init && docker compose up -d superset
+docker compose up -d airflow-init && docker compose up -d airflow-webserver airflow-scheduler
+
+# 3. Inicializar dashboard en Superset
+docker compose run --rm superset-bootstrap python /app/scripts/superset_bootstrap.py
+
+# 4. Disparar DAG en Airflow
+docker compose exec -T airflow-webserver airflow dags trigger etl_ods3_salud_colombia
+```
+
+---
+
+### 15.6 Pipeline Local en el Host (Sin Airflow)
+
+```bash
+export PYTHONPATH=.
+export POSTGRES_HOST=localhost
+export POSTGRES_PORT=5432
+export POSTGRES_DB=salud_colombia
+export POSTGRES_USER=etl_user
+export POSTGRES_PASSWORD=etl_password
+
+# 1. Ejecutar pipeline completo con Great Expectations
 python -m src.etl_main
-```
 
-### Option B: Docker (Linux)
+# 2. Ejecutar corrida con falla controlada (Test B)
+python -m src.etl_main --simulate-failure DQ-02
 
-```bash
-# Build and run everything
-docker compose down -v
-docker compose build --no-cache
-docker compose up -d
-docker compose run --rm etl
+# 3. Ejecutar suite de confiabilidad (Tests A, B y C)
+python scripts/run_reliability_tests.py all
 
-# Check logs
-docker compose logs etl
-
-# Stop all services
-docker compose down -v
-```
-
-### Option C: Docker (Windows — PowerShell)
-
-```powershell
-# Build and run everything
-docker compose down -v
-docker compose build --no-cache
-docker compose up -d
-docker compose run --rm etl
-
-# Check logs
-docker compose logs etl
-
-# Stop all services
-docker compose down -v
-```
-
-### Option D: Podman (Linux)
-
-```bash
-# Build and run everything
-podman-compose down -v
-podman-compose build --no-cache
-podman-compose up -d
-podman-compose run --rm etl
-
-# Check logs
-podman-compose logs etl
-
-# Stop all services
-podman-compose down -v
-```
-
-### Option E: Podman (Windows — PowerShell)
-
-```powershell
-# Build and run everything
-podman-compose down -v
-podman-compose build --no-cache
-podman-compose up -d
-podman-compose run --rm etl
-
-# Check logs
-podman-compose logs etl
-
-# Stop all services
-podman-compose down -v
-```
-
-### ETL Pipeline Output
-
-When you run the ETL pipeline, you should see the following output:
-
-```
-============================================================
-  ETL Salud Colombia — Warehouse Dimensional
-============================================================
-
-PHASE 1: EXTRACTION
-[EXTRACT] Extracting affiliates from: data/raw/affiliates_by_department_municipality_regime_20260906.csv
-[EXTRACT] Records extracted: 3369
-[EXTRACT] Extracting facilities from: data/raw/healthcare_facilities_by_level_capacity_20260906.csv
-[EXTRACT] Records extracted: 41427
-
-PHASE 1.5: RAW VALIDATION
-[VALIDATE] Raw validation passed
-
-PHASE 2: TRANSFORMATION
-[TRANSFORM] Cleaning affiliates dataset...
-[TRANSFORM] Records after cleaning: 3369
-[TRANSFORM] Cleaning facilities dataset...
-[TRANSFORM] Records after cleaning: 41427
-[TRANSFORM] Building dimensions...
-[TRANSFORM] Time dimension records: 2
-[TRANSFORM] Geography dimension records: 2240 (enriched with API Colombia)
-[TRANSFORM] Regime dimension records: 4
-[TRANSFORM] Facility dimension records: 10921
-[TRANSFORM] Capacity type dimension records: 63
-[TRANSFORM] Building fact tables...
-[TRANSFORM] Affiliates fact records (quarterly): 3369
-[TRANSFORM] Facility capacity fact records: 31496
-
-PHASE 2.5: VALIDATION
-[VALIDATE] All validations passed successfully
-
-PHASE 3: LOADING
-[LOAD] Schema reset from init.sql
-[LOAD] Loading dimension dim_time: 2 records
-[LOAD] Loading dimension dim_geografia: 2240 records
-[LOAD] Loading dimension dim_regime: 4 records
-[LOAD] Loading dimension dim_facility: 10921 records
-[LOAD] Loading dimension dim_capacity_type: 63 records
-[LOAD] Loading fact table fact_affiliates: 3369 records
-[LOAD] Loading fact table fact_facility_capacity: 31496 records
-[LOAD] Load completed successfully
-
-PHASE 4: CSV EXPORT
-[EXPORT] Exported dim_time: 2 records
-[EXPORT] Exported dim_geografia: 2240 records
-[EXPORT] Exported dim_regime: 4 records
-[EXPORT] Exported dim_facility: 10921 records
-[EXPORT] Exported dim_capacity_type: 63 records
-[EXPORT] Exported fact_affiliates: 3369 records
-[EXPORT] Exported fact_capacity: 31496 records
-
-============================================================
-  ETL PROCESS COMPLETED SUCCESSFULLY
-============================================================
-```
-
-### Environment Variables
-
-| Variable | Default | Description |
-|---|---|---|
-| `DB_HOST` | localhost (local) / postgres (Docker) | PostgreSQL host |
-| `DB_PORT` | 5432 | PostgreSQL port |
-| `DB_NAME` | salud_colombia | Database name |
-| `DB_USER` | etl_user | Database user |
-| `DB_PASSWORD` | etl_password_2026 | Database password |
-
-### Connecting with DBeaver
-
-DBeaver is a free, universal database tool used to visualize and query the Data Warehouse.
-
-1. **Download and install** DBeaver from https://dbeaver.io/download
-2. **Create a new connection:**
-   - Open DBeaver → Click "New Database Connection" (plug icon)
-   - Select **PostgreSQL** → Click Next
-3. **Configure the connection:**
-
-| Field | Value |
-|---|---|
-| Server Host | `localhost` (local) or `localhost` (Docker, since port 5432 is mapped) |
-| Port | `5432` |
-| Database | `salud_colombia` |
-| Username | `etl_user` |
-| Password | `etl_password_2026` |
-
-4. **Test the connection** → Click "Finish"
-5. **Verify the schema:**
-   - Expand `salud_colombia` → Schemas → `public` → Tables
-   - You should see: `dim_time`, `dim_geografia`, `dim_regime`, `dim_facility`, `dim_capacity_type`, `fact_affiliates`, `fact_facility_capacity`
-6. **Run analytical queries:**
-   - Open a SQL editor (right-click `salud_colombia` → SQL Editor → New SQL Editor)
-   - Paste queries from `sql/analytical_queries.sql`
-   - Execute with Ctrl+Enter
-
-> **Note:** If using Docker, the PostgreSQL port is exposed on `5432` by default. If that port is already in use, change the mapping in `docker-compose.yml` (e.g., `"5433:5432"`) and update `DB_PORT` in your `.env` file.
-
-### Connecting Power BI (Windows VM) to PostgreSQL (Linux Host)
-
-If you are running Power BI Desktop on a Windows virtual machine and PostgreSQL is running on a Linux host (via Podman/Docker), follow these steps to establish the connection.
-
-#### Prerequisites
-
-- Power BI Desktop installed on the Windows VM
-- PostgreSQL running on the Linux host (via Podman/Docker)
-- Network connectivity between the VM and the Linux host
-
-#### Step 1: Find the Linux Host IP Address
-
-On the Linux host, run:
-
-```bash
-ip addr show virbr0 2>/dev/null || ip addr show | grep "inet " | grep -v 127.0.0.1
-```
-
-The default libvirt/virbr0 network IP is typically `192.168.122.1`.
-
-#### Step 2: Configure the Connection in Power BI
-
-1. Open **Power BI Desktop** on the Windows VM
-2. Click **Get Data** → **More...**
-3. Select **PostgreSQL database** and click **Connect**
-4. Enter the connection settings:
-
-| Setting | Value |
-|---------|-------|
-| **Server** | `<LINUX_HOST_IP>:5432` (e.g., `192.168.122.1:5432`) |
-| **Database** | `salud_colombia` |
-| **Data Connectivity mode** | `Import` (recommended for development) or `DirectQuery` |
-
-5. Click **OK**
-
-#### Step 3: Authenticate
-
-In the authentication dialog:
-
-| Tab | Setting | Value |
-|-----|---------|-------|
-| **Database** | Username | `etl_user` |
-| **Database** | Password | `etl_password_2026` |
-
-6. Click **Connect**
-
-#### Step 4: Handle SSL/Certificate Warnings
-
-If Windows prompts to install the Npgsql connector or reports missing SSL certificates:
-
-- Accept the warning for unencrypted connection on the internal virtual network
-- This is safe for local/development environments
-
-#### Step 5: Select Tables
-
-1. In the Navigator, expand the `public` schema
-2. Select the tables you want to import:
-
-| Table | Content |
-|-------|---------|
-| `dim_time` | Time periods (Q2 2022, Q4 2022) |
-| `dim_geografia` | Municipalities with DANE codes, region, and API Colombia enrichment |
-| `dim_regime` | Regime types (Subsidized, Contributory, Special, Individual) |
-| `dim_facility` | 10,921 healthcare facilities (IPS) with sk_geografia FK |
-| `dim_capacity_type` | 63 capacity types (CAMAS/SALAS × TPR/Adultos/Pediátrica) |
-| `fact_affiliates` | 3,369 affiliate records (quarterly granularity) |
-| `fact_facility_capacity` | 31,496 capacity records |
-
-3. Click **Load** or **Transform Data** if you need to clean the data first
-
-#### Connection Summary
-
-| Component | Value |
-|-----------|-------|
-| **Server IP** | `192.168.122.1` (default virbr0) or your host IP |
-| **Port** | `5432` |
-| **Database** | `salud_colombia` |
-| **Username** | `etl_user` |
-| **Password** | `etl_password_2026` |
-| **SSL Mode** | `Prefer` or `Disable` (for local VMs) |
-
-> **Note:** If the connection fails, ensure the PostgreSQL container is bound to `0.0.0.0:5432` (not just `127.0.0.1:5432`) so it accepts external connections. The `docker-compose.yml` in this project already configures this correctly.
-
----
-
-## 19. Limitations and Assumptions
-
-1. **Temporal snapshot limitation:** Both datasets are cross-sectional snapshots (Q2 2022 for affiliates, Q4 2022 for facilities). True temporal trend analysis would require multiple periods.
-2. **Care level gaps:** 61% of facility records lack a care level value, limiting the granularity of care-level analysis. Missing values are stored as NULL in the data warehouse.
-3. **Affiliation ≠ Access:** High affiliation rates do not necessarily guarantee effective healthcare access. The analysis measures system enrollment, not service utilization.
-4. **Capacity definition:** `capacity_amount` represents installed capacity (beds, rooms, equipment), not operational or effective capacity.
-5. **Facility municipalities:** Facilities in municipalities not present in the affiliates dataset are recovered via synthetic DANE codes (hashlib.md5) to preserve REPS data completeness.
-6. **Cross-dataset comparison caveat:** R4 (capacity per affiliate) uses Q4 2022 capacity data with Q2 2022 affiliation data. The ratio is indicative, not temporally precise.
-
----
-
-## 20. Technologies
-
-| Component | Technology |
-|---|---|
-| Programming | Python 3.11, Pandas, NumPy, Requests |
-| Profiling | Jupyter Notebook |
-| Data Warehouse | PostgreSQL 12+ |
-| ETL Pipeline | Python (extract.py → transform.py → validate.py → load.py) |
-| BI Dashboard | Power BI |
-| Version Control | Git, GitHub |
-
-### Option F: Nix Flake (NixOS / Linux)
-
-If you use Nix with the provided `flake.nix`, enter the development shell:
-
-```bash
-nix develop
-```
-
-This automatically sets up Python 3.12, PostgreSQL, Docker/Podman, Jupyter, and all dependencies.
-
-**Available commands inside the Nix shell:**
-
-| Command | Description |
-|---|---|
-| `docker-compose up -d` | Start infrastructure (Docker) |
-| `podman-compose up -d` | Start infrastructure (Podman) |
-| `docker-compose run --rm etl` | Run ETL pipeline |
-| `./run_tests.sh unit` | Run unit tests |
-| `./run_tests.sh all` | Run all tests |
-| `jupyter lab` | Start JupyterLab |
-| `jupyter notebook` | Start classic Jupyter Notebook |
-| `uv pip install <pkg>` | Install a package |
-
----
-
-## 21. Team Members and Responsibilities
-
-| Member | Role | Responsibilities |
-|---|---|---|
-| Deyton Riascos Ortiz | Project Manager | Coordinate the project, organize tasks, consolidate the final report, and prepare the presentation |
-| Samuel Izquierdo Bonilla | Development Team | Lead the definition of requirements, user stories, KPIs, and data mapping |
-| Daniel David Garcia Restrepo | Development Team | Prioritize requirements, validate that responses meet client needs, and review business objectives |
-| Mauricio Taborda Gongora | Tester | Validate data quality, verify ETL results, perform integration and unit testing |
-
----
-
-## 22. Project Structure
-
-```
-etl-project-first-delivery/
-├── data/
-│   ├── raw/                              # Source CSV files (preserved)
-│   └── processed/                        # ETL output: dimension & fact CSVs for Power BI
-├── diagrams/                             # Mermaid source + exported PNGs (star_schema, architecture, dashboard)
-├── visualizations/                       # Dashboard screenshots
-├── notebooks/
-│   └── 01_data_validation_cleanup.ipynb  # Jupyter profiling notebook
-├── src/
-│   ├── __init__.py
-│   ├── config.py                         # DB config, mappings, normalizers
-│   ├── extract.py                        # CSV ingestion
-│   ├── transform.py                      # Cleaning + dimensional builders
-│   ├── validate.py                       # Data quality checks
-│   ├── load.py                           # PostgreSQL bulk load + CSV export
-│   └── etl_main.py                       # Pipeline orchestrator
-├── sql/
-│   ├── init.sql                          # DW schema (DDL)
-│   └── analytical_queries.sql            # R1–R5 analytical queries
-├── docs/
-│   └── informe.tex                       # Project report (LaTeX)
-├── README.md
-├── requirements.txt
-└── .gitignore
+# 4. Ejecutar pruebas unitarias
+pytest tests/
 ```
 
 ---
 
-## 23. Reproducibility
+### 15.7 Estructura del Repositorio
 
-### Quick Start with Docker/Podman
-
-```bash
-git clone <repository-url>
-cd etl-project-first-delivery
-
-# Create .env file (or configure in docker-compose.yml)
-cat > .env << EOF
-POSTGRES_DB=salud_colombia
-POSTGRES_USER=etl_user
-POSTGRES_PASSWORD=etl_password_2026
-POSTGRES_PORT=5432
-PGADMIN_DEFAULT_EMAIL=admin@admin.com
-PGADMIN_DEFAULT_PASSWORD=admin
-EOF
-
-# Build and run
-docker compose build --no-cache && docker compose up -d && docker compose run --rm etl
-# OR
-podman-compose build --no-cache && podman-compose up -d && podman-compose run --rm etl
-
-# After ETL completes, CSV files are in data/processed/
-ls data/processed/
+```text
+Activities/5/
+|-- run.sh / run.bat           # Punto de entrada único (up/down/trigger/validate/test/ports/...)
+|-- dags/
+|   `-- etl_ods3_salud_dag.py  # DAG TaskFlow de 8 tareas con Great Expectations
+|-- src/
+|   |-- config.py              # Configuraciones del sistema y variables de entorno
+|   |-- extract.py             # Extracción de datasets primarios (CSV)
+|   |-- api_extract.py         # Extracción de API Colombia con reintentos y caché
+|   |-- transform.py           # Transformación, contratos DANE y claves subrogadas
+|   |-- load.py                # Carga dimensional idempotente a PostgreSQL y CSV
+|   |-- profile_data.py        # Perfilamiento automatizado de fuentes
+|   |-- etl_main.py            # CLI unificado del pipeline por lotes
+|   `-- quality/
+|       |-- rules.py           # Catálogo formal de reglas DQ-01 a DQ-12 y excepciones
+|       `-- gx_validator.py    # Implementación de las 3 compuertas con Great Expectations
+|-- tests/                     # Suite de pruebas unitarias e integración con pytest
+|-- sql/
+|   |-- init.sql               # DDL del Data Warehouse dimensional (tablas, PKs, FKs, vistas)
+|   `-- analytical_queries.sql # Consultas SQL analíticas para R1 a R7
+|-- scripts/
+|   |-- run_reliability_tests.py # Ejecutor de Tests A, B y C de confiabilidad
+|   `-- superset_bootstrap.py    # Registro automatizado de fuentes y dashboards en Superset
+|-- docs/
+|   |-- powerbi_postgrest_guide.md # Guía paso a paso para Power BI con PostgREST
+|   `-- evidence/
+|       |-- gx/                # Evidencia JSON de compuertas (Gates 1, 2 y 3)
+|       `-- profiling/         # Evidencia JSON del perfilamiento de datos
+|-- data/
+|   |-- raw/                   # Datos crudos confirmados (Afiliados, REPS, API caché)
+|   |-- work/                  # Datos intermedios de trabajo
+|   `-- output/                # Artefactos CSV exportados para BI
+|-- docker-compose.yml         # Definición de infraestructura (Postgres, PostgREST, Superset, Airflow)
+`-- requirements.txt           # Dependencias de producción
 ```
 
-### Quick Start without Docker (Local)
+---
 
-```bash
-git clone <repository-url>
-cd etl-project-first-delivery
-pip install -r requirements.txt
-psql -U postgres -c "CREATE DATABASE salud_colombia;"
-psql -U postgres -c "CREATE USER etl_user WITH PASSWORD 'etl_password_2026';"
-psql -U postgres -c "GRANT ALL PRIVILEGES ON DATABASE salud_colombia TO etl_user;"
-psql -U postgres -d salud_colombia -c "GRANT USAGE, CREATE ON SCHEMA public TO etl_user;"
-psql -U etl_user -d salud_colombia -f sql/init.sql
-python -m src.etl_main
-```
+### 15.8 Supuestos y Limitaciones
+
+1. **Desfase Temporal de Instantáneas:** Los datos de afiliados corresponden al corte de abril de 2022 (Q2), mientras que la infraestructura REPS corresponde a noviembre de 2022 (Q4). Se asume estabilidad de la capacidad hospitalaria en el intervalo intersemestral.
+2. **Población Flotante y Movilidad Sanitaria:** Departamentos como San Andrés y Providencia (106.8%) y Bogotá D.C. (104.2%) exhiben tasas de afiliación superiores al 100% de la población censal. Esto refleja migración laboral y personas registradas en la capital que provienen de municipios aledaños de Cundinamarca.
+3. **Resiliencia de la API:** Si la API externa (`api-colombia.com`) presenta caída o timeout, el pipeline conmuta automáticamente al archivo de respaldo en caché local (`data/raw/api_departments_raw.json`), evitando interrupciones en la orquestación.
+4. **Idempotencia de Carga:** La estrategia de carga utiliza transacciones atómicas con reemplazo seguro de hechos para el lote procesado (`ON CONFLICT` o truncado controlado de lote), garantizando que las re-ejecuciones nunca dupliquen filas ni corrompan las métricas aditivas.
+
+---
+
+## 16. Hallazgos Clave de Negocio (R1–R7)
+
+Todas las cifras provienen directamente de la ejecución validada del pipeline y del Data Warehouse:
+
+- **R1 (Distribución por Régimen):** El total nacional alcanza **51.182.238 afiliados**. El régimen Subsidiado representa el **53.8%** (27.5 millones) y el Contributivo el **44.5%** (22.8 millones). Los regímenes Especiales y de Excepción representan conjuntamente el **1.7%** restante.
+- **R2 (Concentración Departamental):** Cinco entidades territoriales concentran más del **50% de la población afiliada**: Bogotá D.C. (~8.1 millones), Antioquia (~6.8 millones), Valle del Cauca (~4.6 millones), Cundinamarca (~3.2 millones) y Santander (~2.2 millones). En contraste, los departamentos de la Amazonía y Orinoquía (Vaupés, Guainía, Vichada) no superan los 80.000 afiliados cada uno.
+- **R3 (Capacidad REPS por Naturaleza y Complejidad):** De las 10.921 sedes prestadoras habilitadas, el **60.5% son privadas** y el **39.0% públicas**. La red pública atiende principalmente el Nivel 1 de complejidad (atención primaria), mientras que los prestadores privados concentran más del **70% de las camas de cuidados intensivos y salas quirúrgicas de Niveles 2 y 3** en capitales departamentales.
+- **R4 (Capacidad por Afiliado):** Se evidencia una disparidad superior a **4×** en la capacidad física disponible por afiliado entre departamentos centrales (Bogotá, Antioquia, Santander) y departamentos dispersos (Chocó, Vichada, Guainía).
+- **R5 (Equidad Regional):** En la región **Andina**, el régimen Contributivo lidera con un **52.4%** de afiliación gracias a la formalidad laboral. En contraste, en las regiones **Caribe (68.1%)**, **Pacífico (64.5%)** y **Amazonía (72.3%)**, predomina abrumadoramente el régimen Subsidiado.
+- **R6 (Cobertura Demográfica SGSSS vs API Colombia):** La tasa de cobertura nacional promedio sobre la población censal de API Colombia es del **99.1%**. Se detectan fenómenos de hiper-concentración en San Andrés (106.8%) y Bogotá D.C. (104.2%), mientras que departamentos fronterizos como Vichada y Guainía registran rezagos relativos con brechas poblacionales superiores al 8%.
+- **R7 (Densidad Hospitalaria OMS y Alerta Territorial):** El estándar internacional de la OMS exige al menos **2.5 camas hospitalarias por cada 1.000 habitantes**. 
+  - Solo Bogotá D.C. (2.48), Atlántico (2.42) y Santander (2.18) se aproximan a la meta.
+  - Los departamentos periféricos presentan una **alerta hospitalaria crítica**: Vaupés registra apenas **0.61 camas/1.000 hab**, Vichada **0.72** y Guaviare **0.84**.
+  - Al evaluar la **densidad física por superficie territorial**, la Amazonía presenta menos de **0.05 camas por cada 1.000 km²**, evidenciando un aislamiento geográfico severo ante emergencias médicas de alta complejidad.

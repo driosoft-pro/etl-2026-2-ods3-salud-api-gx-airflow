@@ -1,0 +1,31 @@
+{
+  "gate": "api_raw_validation",
+  "executed_at": "2026-10-18T00:04:05.200626+00:00",
+  "total_rules": 2,
+  "passed_rules": 1,
+  "failed_rules": 1,
+  "has_critical_failure": true,
+  "evaluations": [
+    {
+      "rule_id": "DQ-06",
+      "description": "API Colombia department records must contain name and id",
+      "severity": "CRITICAL",
+      "success": true,
+      "details": {
+        "null_names": 0,
+        "null_ids": 0,
+        "records": 33
+      }
+    },
+    {
+      "rule_id": "DQ-07",
+      "description": "Official population and surface from API must be positive (> 0)",
+      "severity": "CRITICAL",
+      "success": false,
+      "details": {
+        "invalid_population_count": 5,
+        "invalid_surface_count": 3
+      }
+    }
+  ]
+}

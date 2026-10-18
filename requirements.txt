@@ -1,8 +1,19 @@
+# Core Data Engineering & Processing
 pandas>=1.5.0
 numpy>=1.21.0
+requests>=2.28.0
+
+# Database & Data Warehouse
+SQLAlchemy>=2.0.0
 psycopg2-binary>=2.9.0
+
+# Quality Gates & Validation
+great_expectations>=0.18.0
+
+# Testing & Reliability Suite
+pytest>=7.0.0
+
+# Analytics, Visualization & Notebooks
 jupyter>=1.0.0
 matplotlib>=3.5.0
 seaborn>=0.11.0
-pytest>=7.0.0
-requests>=2.28.0
