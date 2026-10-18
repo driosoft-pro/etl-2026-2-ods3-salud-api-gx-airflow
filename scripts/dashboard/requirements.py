@@ -72,6 +72,127 @@ def _bar(x: str, metric, limit: int, fmt: str = ",.0f",
 M_AFF = lambda: simple_metric("numero_afiliados", "SUM", "Afiliados")
 M_BEDS = lambda: simple_metric("camas_por_1000_hab", "MAX", "Camas / 1000 hab", "NUMERIC")
 
+
+# ------------------------------------------------------------- mapa territorial
+# Dataset virtual (no requiere tocar sql/init.sql: funciona en BDs ya creadas).
+# Formato "largo": una fila por (departamento x requerimiento); el filtro nativo
+# "Requerimiento (mapa)" elige el indicador R1-R7 que pintan los mapas.
+# lat/lon = centroide aproximado del departamento; iso = ISO 3166-2:CO.
+MAP_DATASET = "v_map_requirements"
+
+_DEPTS = [  # (DANE, ISO, lat, lon)
+    ("05", "CO-ANT", 6.90, -75.50), ("08", "CO-ATL", 10.70, -74.90),
+    ("11", "CO-DC", 4.65, -74.10), ("13", "CO-BOL", 8.90, -74.50),
+    ("15", "CO-BOY", 5.70, -73.00), ("17", "CO-CAL", 5.30, -75.30),
+    ("18", "CO-CAQ", 1.00, -74.00), ("19", "CO-CAU", 2.40, -76.80),
+    ("20", "CO-CES", 9.50, -73.50), ("23", "CO-COR", 8.40, -75.80),
+    ("25", "CO-CUN", 4.90, -74.40), ("27", "CO-CHO", 5.70, -76.70),
+    ("41", "CO-HUI", 2.60, -75.60), ("44", "CO-LAG", 11.40, -72.50),
+    ("47", "CO-MAG", 10.20, -74.20), ("50", "CO-MET", 3.90, -73.00),
+    ("52", "CO-NAR", 1.30, -77.60), ("54", "CO-NSA", 8.00, -72.90),
+    ("63", "CO-QUI", 4.50, -75.70), ("66", "CO-RIS", 5.20, -75.90),
+    ("68", "CO-SAN", 6.70, -73.20), ("70", "CO-SUC", 9.00, -75.10),
+    ("73", "CO-TOL", 4.00, -75.20), ("76", "CO-VAC", 3.80, -76.60),
+    ("81", "CO-ARA", 6.60, -71.00), ("85", "CO-CAS", 5.30, -71.70),
+    ("86", "CO-PUT", 0.40, -76.40), ("88", "CO-SAP", 12.55, -81.70),
+    ("91", "CO-AMA", -1.50, -71.50), ("94", "CO-GUA", 3.00, -68.50),
+    ("95", "CO-GUV", 2.00, -72.30), ("97", "CO-VAU", 0.60, -70.50),
+    ("99", "CO-VID", 4.70, -69.50),
+]
+_COORDS_VALUES = ",\n    ".join(
+    f"('{d}', '{iso}', {lat}, {lon})" for d, iso, lat, lon in _DEPTS)
+
+MAP_SQL = f"""
+WITH coords(codigo_dane_depto, iso, lat, lon) AS (VALUES
+    {_COORDS_VALUES}
+),
+cov AS (SELECT * FROM v_r6_demographic_coverage),
+cap AS (SELECT * FROM v_r7_territorial_capacity),
+reg AS (
+    SELECT region, SUM(total_afiliados_sgsss) AS afiliados_region
+    FROM cov GROUP BY region
+),
+ind AS (
+    SELECT c.codigo_dane_depto, 'Población (API Colombia)' AS requerimiento,
+           c.poblacion_oficial_api::numeric AS valor FROM cov c
+    UNION ALL SELECT codigo_dane_depto, 'R1 · Afiliados Contributivo',
+           afiliados_contributivo::numeric FROM cov
+    UNION ALL SELECT codigo_dane_depto, 'R1 · Afiliados Subsidiado',
+           afiliados_subsidiado::numeric FROM cov
+    UNION ALL SELECT codigo_dane_depto, 'R1 · Afiliados Régimen Especial/Otros',
+           afiliados_otros::numeric FROM cov
+    UNION ALL SELECT codigo_dane_depto, 'R2 · Afiliados totales SGSSS',
+           total_afiliados_sgsss::numeric FROM cov
+    UNION ALL SELECT codigo_dane_depto, 'R3 · Establecimientos (IPS) habilitados',
+           total_ips_habilitadas::numeric FROM cap
+    UNION ALL SELECT codigo_dane_depto, 'R4 · Camas por 1000 habitantes',
+           camas_por_1000_hab FROM cap
+    UNION ALL SELECT c.codigo_dane_depto, 'R5 · Afiliados de la región',
+           r.afiliados_region::numeric FROM cov c JOIN reg r USING (region)
+    UNION ALL SELECT codigo_dane_depto, 'R6 · Cobertura de afiliación (%)',
+           cobertura_afiliacion_pct FROM cov
+    UNION ALL SELECT codigo_dane_depto, 'R7 · Capacidad instalada por 1000 km²',
+           capacidad_por_1000_km2 FROM cap
+)
+SELECT
+    k.iso, k.lat, k.lon,
+    g.departamento, g.region,
+    g.poblacion_oficial_api AS poblacion,
+    ind.requerimiento,
+    COALESCE(ind.valor, 0) AS valor,
+    COALESCE(ind.valor, 0)
+        / NULLIF(MAX(ind.valor) OVER (PARTITION BY ind.requerimiento), 0) * 100
+        AS valor_norm,
+    cov.categoria_cobertura,
+    cap.nivel_alerta_hospitalaria
+FROM ind
+JOIN coords k USING (codigo_dane_depto)
+JOIN (SELECT codigo_dane_depto, departamento, region, poblacion_oficial_api
+      FROM cov) g USING (codigo_dane_depto)
+LEFT JOIN cov USING (codigo_dane_depto)
+LEFT JOIN cap USING (codigo_dane_depto)
+"""
+
+MAP_DEFAULT_REQ = "Población (API Colombia)"
+M_VALOR = lambda: simple_metric("valor", "SUM", "Valor del indicador", "NUMERIC")
+# Tamaño relativo (0-100 = % del máximo del indicador): los valores crudos van de
+# decenas a millones y saturaban el radio, dejando todas las burbujas iguales.
+M_SIZE = lambda: simple_metric("valor_norm", "MAX", "Tamaño relativo (% del máximo)", "NUMERIC")
+MAP_VIEWPORT = {"longitude": -73.0, "latitude": 4.6, "zoom": 4.6,
+                "bearing": 0, "pitch": 0}
+
+MAP_CHARTS: list[dict] = [
+    _spec(W, MAP_DATASET, "Req · Mapa — Coroplético por Departamento",
+          "Mapa de Colombia: el color de cada departamento representa el indicador "
+          "elegido en el filtro 'Requerimiento (mapa)' (población, R1–R7).",
+          [("country_map", {
+              "select_country": "colombia", "entity": "iso", "metric": M_VALOR(),
+              "linear_color_scheme": "blue_white_yellow", "number_format": "SMART_NUMBER",
+              "row_limit": 100})]),
+    _spec(W, MAP_DATASET, "Req · Mapa — Marcadores por Departamento",
+          "Marca (burbuja) en cada departamento; el tamaño representa el indicador "
+          "elegido en el filtro 'Requerimiento (mapa)'. Mapa base OpenStreetMap (sin token).",
+          [("deck_scatter", {
+              "spatial": {"type": "latlong", "lonCol": "lon", "latCol": "lat"},
+              "point_radius_fixed": {"type": "metric", "value": M_SIZE()},
+              "multiplier": 0.5, "point_unit": "pixels", "min_radius": 6,
+              "max_radius": 50, "row_limit": 100,
+              "groupby": ["departamento", "requerimiento"],
+              "metrics": [M_VALOR()],
+              # Mapa base OpenStreetMap: no requiere token de Mapbox
+              "mapbox_style": "tile://https://a.tile.openstreetmap.org/{z}/{x}/{y}.png",
+              "tooltip_contents": [
+                  {"item_type": "column", "column_name": "departamento"},
+                  {"item_type": "column", "column_name": "requerimiento"},
+                  {"item_type": "metric", "metric_name": "Valor del indicador"}],
+              "viewport": MAP_VIEWPORT, "color_picker": {"r": 2, "g": 132, "b": 199, "a": 0.8},
+              "autozoom": False, "js_columns": [], "adhoc_filters": []})]),
+    _spec(W, MAP_DATASET, "Req · Mapa — Detalle por Departamento",
+          "Valores del indicador seleccionado por departamento (tabla del mapa).",
+          [_table(["departamento", "region", "requerimiento", "poblacion", "valor",
+                   "categoria_cobertura", "nivel_alerta_hospitalaria"], 50)]),
+]
+
 REQ_CHARTS: list[dict] = [
     # --- R1
     _spec(W, "v_affiliates_summary", "Req · R1 — Afiliados por Régimen",
@@ -132,6 +253,19 @@ REQ_CHARTS: list[dict] = [
 # ------------------------------------------------- tabs (una pestaña por R)
 
 REQ_MARKDOWN: dict[str, str] = {
+    "tab_map": (
+        "### 🗺️ Mapa territorial · Población e indicadores R1–R7\n"
+        "Elige el indicador en el filtro **Requerimiento (mapa)** (población, R1–R7) y "
+        "combínalo con Región, Departamento, Categoría de Cobertura o Nivel de Alerta: "
+        "el mapa coroplético y los marcadores se actualizan.\n\n"
+        "> Nota: el tamaño de cada burbuja es relativo (% del máximo del indicador). La geometría base de Superset no separa Bogotá D.C. de "
+        "Cundinamarca, por eso Bogotá solo aparece en los marcadores.\n\n"
+        "```sql\n"
+        "SELECT departamento, requerimiento, SUM(valor) AS valor\n"
+        "FROM v_map_requirements  -- dataset virtual sobre v_r6 / v_r7\n"
+        "GROUP BY 1, 2;\n"
+        "```"
+    ),
     "tab_r1": (
         "### R1 · Afiliados por Régimen\n"
         "Distribución de los afiliados al SGSSS según el régimen de cotización "
@@ -201,6 +335,12 @@ REQ_MARKDOWN: dict[str, str] = {
 }
 
 REQ_TABS: list[tuple[str, list]] = [
+    ("🗺️ Mapa Territorial", [
+        [("md", "tab_map", 12, 26)],
+        [("chart", "Req · Mapa — Coroplético por Departamento", 6, 70),
+         ("chart", "Req · Mapa — Marcadores por Departamento", 6, 70)],
+        [("chart", "Req · Mapa — Detalle por Departamento", 12, 44)],
+    ]),
     ("R1 · Afiliados por Régimen", [
         [("md", "tab_r1", 12, 26)],
         [("chart", "Req · R1 — Afiliados por Régimen", 6, 46),
@@ -237,6 +377,9 @@ REQ_TABS: list[tuple[str, list]] = [
 ]
 
 REQ_FILTERS: list[dict] = [
+    {"name": "Requerimiento (mapa)", "column": "requerimiento", "multi": False,
+     "default": [MAP_DEFAULT_REQ], "required": True,
+     "description": "Indicador que pintan los mapas: población y R1–R7"},
     {"name": "Régimen", "column": "regime",
      "description": "Régimen de cotización (Contributivo, Subsidiado, Especial, Individual)"},
     {"name": "Región", "column": "region", "description": "Región del país (Caribbean, Andean, Pacific...)"},
@@ -302,6 +445,10 @@ def build(client: SupersetClient) -> int:
         used[view] = ds_id
         cols[ds_id] = columns
 
+    ds_id, columns = ensure_dataset(client, database_id, MAP_DATASET, sql=MAP_SQL)
+    used[MAP_DATASET] = ds_id
+    cols[ds_id] = columns
+
     dash = client.ensure("/api/v1/dashboard/", "slug", REQ_SLUG, {
         "dashboard_title": REQ_TITLE, "slug": REQ_SLUG,
         "published": True, "json_metadata": "{}",
@@ -311,7 +458,7 @@ def build(client: SupersetClient) -> int:
     chart_ids: dict[str, int] = {}
     chart_dataset: dict[int, int] = {}
     dash_chart_ids: list[int] = []
-    for spec in REQ_CHARTS:
+    for spec in MAP_CHARTS + REQ_CHARTS:
         cid = ensure_chart(client, spec, used[spec["dataset"]], dash_id)
         chart_ids[spec["slice_name"]] = cid
         chart_dataset[cid] = used[spec["dataset"]]

@@ -192,7 +192,12 @@ def _validation_query(form: dict) -> dict:
         groupby = list(form["all_columns"])
         metrics = []
     else:
-        groupby = [form[k] for k in ("x_axis", "all_columns_x", "all_columns_y") if form.get(k)]
+        groupby = [form[k] for k in ("x_axis", "all_columns_x", "all_columns_y", "entity") if form.get(k)]
+        spatial = form.get("spatial") or {}
+        groupby += [spatial[k] for k in ("lonCol", "latCol") if spatial.get(k)]
+        radius = form.get("point_radius_fixed") or {}
+        if radius.get("type") == "metric" and isinstance(radius.get("value"), dict):
+            metrics = metrics + [radius["value"]]
         extra = form.get("groupby") or []
         groupby += [extra] if isinstance(extra, str) else list(extra)
         groupby += list(form.get("columns") or [])
@@ -275,7 +280,7 @@ def build_filters(chart_dataset: dict[int, int], dataset_cols: dict[int, set[str
             "targets": [{"datasetId": ds_id, "column": {"name": col}} for ds_id in target_datasets],
             "controlValues": {
                 "multiSelect": spec.get("multi", True),
-                "enableEmptyFilter": False,
+                "enableEmptyFilter": bool(spec.get("required", False)),
                 "defaultToFirstItem": False,
                 "inverseSelection": False,
                 "searchAllOptions": False,

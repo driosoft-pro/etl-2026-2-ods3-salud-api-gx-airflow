@@ -73,4 +73,7 @@ venv.bak/
 /site
 
 # mypy
-.mypy_cache/.pgdata/
+.mypy_cache/
+
+# Datos de PostgreSQL (bind mount)
+.pgdata/

@@ -1,0 +1,171 @@
+erDiagram
+    %% ==========================================
+    %% AUDIT SCHEMA (Trazabilidad y Control ETL)
+    %% ==========================================
+    etl_run {
+        bigserial run_id PK
+        varchar run_key UK
+        varchar dag_id
+        varchar run_type
+        varchar trigger_source
+        varchar status
+        varchar stage_reached
+        timestamptz started_at
+        timestamptz finished_at
+        numeric duration_seconds
+        jsonb source_counts
+        jsonb rows_loaded
+        integer dq_rules_passed
+        integer dq_rules_total
+        text error_message
+    }
+
+    etl_run_step {
+        bigserial step_id PK
+        bigint run_id FK
+        varchar phase
+        varchar step_name
+        varchar status
+        bigint rows_in
+        bigint rows_out
+        timestamptz started_at
+        timestamptz finished_at
+        text message
+    }
+
+    dq_check_result {
+        bigserial result_id PK
+        bigint run_id FK
+        varchar rule_id
+        varchar gate
+        varchar layer
+        varchar severity
+        varchar status
+        text observed_value
+        varchar threshold
+        jsonb details
+        timestamptz checked_at
+    }
+
+    etl_batch_log {
+        bigserial batch_id PK
+        bigint run_id FK
+        varchar dag_id
+        varchar strategy
+        jsonb target_rows_before
+        jsonb target_rows_after
+        varchar status
+        timestamptz started_at
+        timestamptz finished_at
+        numeric duration_seconds
+        text notes
+    }
+
+    %% Relaciones del esquema Audit
+    etl_run ||--o{ etl_run_step : "genera"
+    etl_run ||--o{ dq_check_result : "valida"
+    etl_run ||--o{ etl_batch_log : "orquesta"
+
+    %% ==========================================
+    %% DIMENSIONS (Esquema Public)
+    %% ==========================================
+    dim_time {
+        serial sk_time PK
+        integer year
+        integer month
+        varchar month_name
+        integer quarter
+        integer semester
+        varchar periodo_codigo
+        date full_date
+        bigint batch_id FK
+    }
+
+    dim_geografia {
+        serial sk_geografia PK
+        varchar codigo_dane_municipio UK
+        varchar municipio
+        varchar codigo_dane_depto
+        varchar departamento
+        varchar region
+        varchar capital
+        numeric surface
+        bigint population
+        integer municipalities_count
+        varchar phone_prefix
+        varchar region_api
+        bigint batch_id FK
+    }
+
+    dim_regime {
+        serial sk_regime PK
+        varchar code UK
+        varchar description
+        bigint batch_id FK
+    }
+
+    dim_facility {
+        serial sk_facility PK
+        varchar provider_code
+        varchar name
+        varchar nit
+        varchar nature
+        integer care_level
+        varchar manager
+        varchar address
+        varchar email
+        varchar phone
+        integer sk_geografia FK
+        bigint batch_id FK
+    }
+
+    dim_capacity_type {
+        serial sk_capacity_type PK
+        varchar group
+        varchar description
+        bigint batch_id FK
+    }
+
+    %% Relación interna dimensional (Outrigger / Copo de nieve)
+    dim_geografia ||--o{ dim_facility : "ubica"
+
+    %% ==========================================
+    %% FACT TABLES (Esquema Public)
+    %% ==========================================
+    fact_affiliates {
+        serial sk_affiliate PK
+        integer sk_time FK
+        integer sk_geografia FK
+        integer sk_regime FK
+        bigint numero_afiliados
+        bigint batch_id FK
+    }
+
+    fact_facility_capacity {
+        serial sk_capacity PK
+        integer sk_time FK
+        integer sk_facility FK
+        integer sk_capacity_type FK
+        integer sk_geografia FK
+        integer capacity_amount
+        bigint batch_id FK
+    }
+
+    %% Relaciones de Hechos con Dimensiones Conformes
+    dim_time ||--o{ fact_affiliates : "temporalidad"
+    dim_geografia ||--o{ fact_affiliates : "localiza"
+    dim_regime ||--o{ fact_affiliates : "clasifica"
+
+    dim_time ||--o{ fact_facility_capacity : "snapshot"
+    dim_facility ||--o{ fact_facility_capacity : "institucion"
+    dim_capacity_type ||--o{ fact_facility_capacity : "tipo_servicio"
+    dim_geografia ||--o{ fact_facility_capacity : "territorio"
+
+    %% Relaciones de Linaje con Lotes ETL
+    etl_batch_log ||--o{ dim_time : "estampa"
+    etl_batch_log ||--o{ dim_geografia : "estampa"
+    etl_batch_log ||--o{ dim_regime : "estampa"
+    etl_batch_log ||--o{ dim_facility : "estampa"
+    etl_batch_log ||--o{ dim_capacity_type : "estampa"
+    etl_batch_log ||--o{ fact_affiliates : "estampa"
+    etl_batch_log ||--o{ fact_facility_capacity : "estampa"

@@ -257,6 +257,20 @@ erDiagram
 
     dim_geografia ||--o{ dim_facility : "sk_geografia"
 
+    %% Procedencia (batch_id) hacia el esquema audit
+    audit_etl_batch_log |o--o{ dim_time : "batch_id"
+    audit_etl_batch_log |o--o{ dim_geografia : "batch_id"
+    audit_etl_batch_log |o--o{ dim_regime : "batch_id"
+    audit_etl_batch_log |o--o{ dim_facility : "batch_id"
+    audit_etl_batch_log |o--o{ dim_capacity_type : "batch_id"
+    audit_etl_batch_log |o--o{ fact_affiliates : "batch_id"
+    audit_etl_batch_log |o--o{ fact_facility_capacity : "batch_id"
+
+    %% Trazabilidad del ETL (esquema audit)
+    audit_etl_run |o--o{ audit_etl_batch_log : "run_id"
+    audit_etl_run ||--o{ audit_etl_run_step : "run_id"
+    audit_etl_run ||--o{ audit_dq_check_result : "run_id"
+
     dim_time {
         serial sk_time PK
         integer year
@@ -294,7 +308,7 @@ erDiagram
 
     dim_facility {
         serial sk_facility PK
-        varchar provider_code
+        varchar provider_code UK "UK compuesto con sk_geografia"
         varchar name
         varchar nit
         varchar nature
@@ -303,14 +317,14 @@ erDiagram
         varchar address
         varchar email
         varchar phone
-        integer sk_geografia FK
+        integer sk_geografia FK,UK
         bigint batch_id FK
     }
 
     dim_capacity_type {
         serial sk_capacity_type PK
-        varchar group
-        varchar description
+        varchar group UK "UK compuesto con description"
+        varchar description UK
         bigint batch_id FK
     }
 
@@ -331,6 +345,65 @@ erDiagram
         integer sk_geografia FK
         integer capacity_amount
         bigint batch_id FK
+    }
+
+    audit_etl_run {
+        bigserial run_id PK
+        varchar run_key UK
+        varchar dag_id
+        varchar run_type
+        varchar trigger_source
+        varchar status
+        varchar stage_reached
+        timestamptz started_at
+        timestamptz finished_at
+        numeric duration_seconds
+        jsonb source_counts
+        jsonb rows_loaded
+        integer dq_rules_passed
+        integer dq_rules_total
+        text error_message
+    }
+
+    audit_etl_run_step {
+        bigserial step_id PK
+        bigint run_id FK
+        varchar phase
+        varchar step_name
+        varchar status
+        bigint rows_in
+        bigint rows_out
+        timestamptz started_at
+        timestamptz finished_at
+        text message
+    }
+
+    audit_dq_check_result {
+        bigserial result_id PK
+        bigint run_id FK
+        varchar rule_id
+        varchar gate
+        varchar layer
+        varchar severity
+        varchar status
+        text observed_value
+        varchar threshold
+        jsonb details
+        timestamptz checked_at
+    }
+
+    audit_etl_batch_log {
+        bigserial batch_id PK
+        bigint run_id FK
+        varchar dag_id
+        varchar strategy
+        jsonb target_rows_before
+        jsonb target_rows_after
+        varchar status
+        timestamptz started_at
+        timestamptz finished_at
+        numeric duration_seconds
+        text notes
     }
 ```
 

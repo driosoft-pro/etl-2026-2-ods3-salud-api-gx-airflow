@@ -29,3 +29,8 @@ LANGUAGES = {
     "en": {"flag": "us", "name": "English"},
     "es": {"flag": "es", "name": "Español"},
 }
+
+# Mapas deck.gl (marcadores): token gratuito de https://account.mapbox.com/
+# Definir MAPBOX_API_KEY en .env. Sin token, el mapa coropletico por
+# departamento (country_map) funciona igual y no lo requiere.
+MAPBOX_API_KEY = os.getenv("MAPBOX_API_KEY", "")
