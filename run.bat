@@ -102,11 +102,11 @@ goto up
 goto end
 
 :trigger
-%COMPOSE_CMD% exec -T airflow-webserver airflow dags trigger etl_ods3_salud_colombia
+%COMPOSE_CMD% exec -T airflow-webserver airflow dags trigger reliable_health_pipeline
 goto end
 
 :trigger_bad
-%COMPOSE_CMD% exec -T airflow-webserver airflow dags trigger etl_ods3_salud_colombia --conf "{\"simulate_failure\":\"DQ-02\"}"
+%COMPOSE_CMD% exec -T airflow-webserver airflow dags trigger bad_health_pipeline
 goto end
 
 :test_a

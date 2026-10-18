@@ -134,13 +134,13 @@ case "$cmd" in
 
     trigger)
         echo "==> Disparando DAG Test A (8/8 success) en Apache Airflow..."
-        $COMPOSE_CMD exec -T airflow-webserver airflow dags trigger etl_ods3_salud_colombia 2>/dev/null || \
+        $COMPOSE_CMD exec -T airflow-webserver airflow dags trigger reliable_health_pipeline 2>/dev/null || \
         $COMPOSE_CMD run --rm etl python scripts/run_reliability_tests.py a
         ;;
 
     trigger-bad)
         echo "==> Disparando DAG Test B (falla controlada DQ-02) en Apache Airflow..."
-        $COMPOSE_CMD exec -T airflow-webserver airflow dags trigger etl_ods3_salud_colombia --conf '{"simulate_failure":"DQ-02"}' 2>/dev/null || \
+        $COMPOSE_CMD exec -T airflow-webserver airflow dags trigger bad_health_pipeline 2>/dev/null || \
         $COMPOSE_CMD run --rm etl python scripts/run_reliability_tests.py b || true
         ;;
 

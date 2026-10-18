@@ -240,7 +240,10 @@ El almacén implementa un **Esquema en Estrella Conforme (Conformed Star Schema)
 
 ## 11. Orquestación y Políticas de Reintento con Apache Airflow 3.1.8
 
-El DAG `etl_ods3_salud_colombia` (`dags/etl_ods3_salud_dag.py`) está implementado mediante la API TaskFlow (`@dag`, `@task`) con 8 tareas estructuradas:
+El entorno de Apache Airflow expone **dos DAGs complementarios** construidos con la API TaskFlow (`@dag`, `@task`) para la sustentación y monitoreo:
+
+1. **`reliable_health_pipeline` (`dags/reliable_health_pipeline.py`):** Corrida 100% confiable y exitosa (Test A: 8/8 tareas en verde).
+2. **`bad_health_pipeline` (`dags/bad_health_pipeline.py`):** Corrida de demostración con falla controlada (Test B: bloqueo determinista en Gate 1 por violación de regla crítica DQ-02).
 
 ```text
 extract_primary ──> validate_primary_raw ──┐
@@ -448,7 +451,8 @@ pytest tests/
 Activities/5/
 |-- run.sh / run.bat           # Punto de entrada único (up/down/trigger/validate/test/ports/...)
 |-- dags/
-|   `-- etl_ods3_salud_dag.py  # DAG TaskFlow de 8 tareas con Great Expectations
+|   |-- reliable_health_pipeline.py # Test A: flujo confiable exitoso (8/8 success)
+|   `-- bad_health_pipeline.py      # Test B: flujo con falla controlada (bloqueo en DQ-02)
 |-- src/
 |   |-- config.py              # Configuraciones del sistema y variables de entorno
 |   |-- extract.py             # Extracción de datasets primarios (CSV)
