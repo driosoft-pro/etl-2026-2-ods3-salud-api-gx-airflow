@@ -240,25 +240,35 @@ El almacén sigue la metodología **Kimball Dimensional Modeling** con estas reg
 
 ### 10.2 Diagrama Entity-Relational del Esquema en Estrella
 
-Fuente editable: [`diagrams/star_schema.mmd`](diagrams/star_schema.mmd). También está disponible como imagen en [`diagrams/starShema.png`](diagrams/starShema.png).
+Fuente editable: [`diagrams/star_schema.mmd`](diagrams/star_schema.mmd). También está disponible en imágenes de alta resolución: PNG [`diagrams/starShema.png`](diagrams/starShema.png) / [`diagrams/star_schema.png`](diagrams/star_schema.png) y formato vectorial SVG [`diagrams/star_schema.svg`](diagrams/star_schema.svg).
+
+![Modelo Dimensional Conforme (Esquema en Estrella)](diagrams/star_schema.png)
 
 ```mermaid
 erDiagram
     dim_time ||--o{ fact_affiliates : "sk_time"
     dim_geografia ||--o{ fact_affiliates : "sk_geografia"
     dim_regime ||--o{ fact_affiliates : "sk_regime"
+
     dim_time ||--o{ fact_facility_capacity : "sk_time"
     dim_facility ||--o{ fact_facility_capacity : "sk_facility"
     dim_capacity_type ||--o{ fact_facility_capacity : "sk_capacity_type"
     dim_geografia ||--o{ fact_facility_capacity : "sk_geografia"
+
     dim_geografia ||--o{ dim_facility : "sk_geografia"
 
     dim_time {
         serial sk_time PK
-        int year
-        int quarter
+        integer year
+        integer month
+        varchar month_name
+        integer quarter
+        integer semester
         varchar periodo_codigo
+        date full_date
+        bigint batch_id FK
     }
+
     dim_geografia {
         serial sk_geografia PK
         varchar codigo_dane_municipio UK
@@ -266,41 +276,61 @@ erDiagram
         varchar codigo_dane_depto
         varchar departamento
         varchar region
+        varchar capital
         numeric surface
         bigint population
+        integer municipalities_count
+        varchar phone_prefix
+        varchar region_api
+        bigint batch_id FK
     }
+
     dim_regime {
         serial sk_regime PK
         varchar code UK
         varchar description
+        bigint batch_id FK
     }
+
     dim_facility {
         serial sk_facility PK
         varchar provider_code
         varchar name
+        varchar nit
         varchar nature
-        int care_level
-        int sk_geografia FK
+        integer care_level
+        varchar manager
+        varchar address
+        varchar email
+        varchar phone
+        integer sk_geografia FK
+        bigint batch_id FK
     }
+
     dim_capacity_type {
         serial sk_capacity_type PK
         varchar group
         varchar description
+        bigint batch_id FK
     }
+
     fact_affiliates {
         serial sk_affiliate PK
-        int sk_time FK
-        int sk_geografia FK
-        int sk_regime FK
+        integer sk_time FK
+        integer sk_geografia FK
+        integer sk_regime FK
         bigint numero_afiliados
+        bigint batch_id FK
     }
+
     fact_facility_capacity {
         serial sk_capacity PK
-        int sk_time FK
-        int sk_facility FK
-        int sk_capacity_type FK
-        int sk_geografia FK
-        int capacity_amount
+        integer sk_time FK
+        integer sk_facility FK
+        integer sk_capacity_type FK
+        integer sk_geografia FK
+        integer capacity_amount
+        bigint batch_id FK
     }
 ```
 
@@ -508,7 +538,7 @@ En Windows: `run.bat up`, `run.bat ports`, `run.bat test`, `run.bat trigger`, et
 
 | Puerto | Servicio | Contenedor | Consumidor Típico | Credenciales |
 | :--- | :--- | :--- | :--- | :--- |
-| **8080** | **Apache Airflow 3.1.8** — Web UI / API | `airflow-webserver` | Navegador | `admin` / `admin` |
+| **8080** | **Apache Airflow 3.1.8** — Web UI / API | `airflow-webserver` | Navegador | `airflow` / `airflow` |
 | **8088** | **Apache Superset 6.1.0** — Plataforma BI | `superset_salud` | Navegador (BI Principal) | `admin` / `admin` |
 | **3000** | **PostgREST REST API** | `postgrest_salud` | Power BI Desktop / Web Clients | Sin autenticación (rol `etl_user`) |
 | **5432** | **PostgreSQL 16** — Data Warehouse | `warehouse_salud` | Superset / DBeaver / psql | `etl_user` / `etl_password` (DB: `salud_colombia`) |
@@ -522,7 +552,7 @@ Los puertos se publican en `0.0.0.0`, por lo que una máquina virtual (VM Window
 | **Usuario / Contraseña** | `etl_user` / `etl_password` | `etl_user` / `etl_password` |
 | **PostgREST Endpoint** | `http://localhost:3000` | `http://192.168.122.1:3000` |
 | **Apache Superset** | `http://localhost:8088` | `http://192.168.122.1:8088` (`admin` / `admin`) |
-| **Apache Airflow** | `http://localhost:8080` | `http://192.168.122.1:8080` (`admin` / `admin`) |
+| **Apache Airflow** | `http://localhost:8080` | `http://192.168.122.1:8080` (`airflow` / `airflow`) |
 
 *Verificación de conectividad desde Windows PowerShell:* `Test-NetConnection 192.168.122.1 -Port 5432` y `Invoke-RestMethod http://192.168.122.1:3000/v_r6_demographic_coverage?limit=1`.
 
@@ -547,7 +577,7 @@ SELECT count(*) FROM fact_affiliates;          -- Debe devolver 3369
 SELECT sum(numero_afiliados) FROM fact_affiliates; -- Debe devolver 51182238
 SELECT count(*) FROM fact_facility_capacity;  -- Debe devolver 31496
 SELECT count(*) FROM dim_geografia;           -- Debe devolver 2240
-SELECT departamento, cobertura_afiliacion_pct, brecha_poblacional_no_afiliada
+SELECT departamento, cobertura_afiliacion_pct, brecha_poblacional
 FROM v_r6_demographic_coverage
 ORDER BY cobertura_afiliacion_pct DESC LIMIT 5;
 
@@ -644,7 +674,10 @@ Activities/5/
 |   `-- analytical_queries.sql # Consultas SQL analíticas para R1 a R7
 |-- diagrams/
 |   |-- star_schema.mmd        # Diagrama ER del esquema en estrella (fuente Mermaid)
-|   |-- starShema.png          # Diagrama del esquema en estrella (imagen)
+|   |-- starShema.png          # Diagrama del esquema en estrella (imagen PNG actualizada)
+|   |-- star_schema.png        # Alias normalizado del esquema en estrella (PNG alta resolución)
+|   |-- star_schema.svg        # Diagrama vectorial escalable del esquema en estrella (SVG)
+|   |-- diagramArchitecture.png # Diagrama de arquitectura de flujos
 |   `-- systemArchitecture.png # Diagrama de arquitectura del sistema
 |-- scripts/
 |   |-- run_reliability_tests.py # Ejecutor de Tests A, B y C de confiabilidad

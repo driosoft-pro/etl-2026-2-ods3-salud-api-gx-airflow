@@ -1,6 +1,6 @@
 {
   "gate": "prepared_data_validation",
-  "executed_at": "2026-10-18T09:54:19.916855+00:00",
+  "executed_at": "2026-10-18T18:32:13.200218+00:00",
   "total_rules": 5,
   "passed_rules": 5,
   "failed_rules": 0,
@@ -54,7 +54,10 @@
       "success": true,
       "details": {
         "fact_total": 51182238,
-        "note": "No raw total provided, bypassed"
+        "raw_total": 51182238,
+        "absolute_diff": 0,
+        "diff_pct": 0.0,
+        "tolerance_threshold": 5118.223800000001
       }
     }
   ]

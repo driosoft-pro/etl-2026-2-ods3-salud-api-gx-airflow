@@ -60,6 +60,9 @@ x-airflow-common: &airflow-common
     - ./gx:/opt/airflow/gx
     - ./logs:/opt/airflow/logs
     - ./config:/opt/airflow/config
+  extra_hosts:
+    - "postgres:host-gateway"
+    - "airflow-webserver:host-gateway"
   user: "${AIRFLOW_UID:-0}:0"
 
 services:
@@ -79,7 +82,11 @@ services:
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      # Bind mount (NO volumen nombrado): podman rootless hace chown de los
+      # volumenes nombrados nuevos al uid de la imagen (999), lo que con
+      # userns keep-id rompe initdb ("could not change permissions").
+      # Un bind mount conserva tu dueno. run.sh crea la carpeta antes.
+      - ${PGDATA_HOST_DIR:-./.pgdata}:/var/lib/postgresql/data
       # Solo se ejecutan en el PRIMER arranque (volumen vacío):
       #   00 -> crea la base airflow_meta (metadatos de Airflow)
       #   01 -> crea el esquema dimensional + auditoría en salud_colombia
@@ -110,9 +117,10 @@ services:
       PGRST_OPENAPI_SERVER_PROXY_URI: http://localhost:3000
     ports:
       - "${POSTGREST_PORT:-3000}:3000"
+    extra_hosts:
+      - "postgres:host-gateway"
     depends_on:
-      postgres:
-        condition: service_healthy
+      - postgres
     restart: always
 
   # --------------------------------------------------------------------------
@@ -132,6 +140,9 @@ services:
     volumes:
       - ./config/superset_config.py:/app/pythonpath/superset_config.py:ro
       - superset_home:/app/superset_home
+    extra_hosts:
+      - "postgres:host-gateway"
+      - "superset:host-gateway"
     entrypoint: /bin/bash
     command:
       - -c
@@ -150,8 +161,7 @@ services:
         superset init
         echo "[superset-init] Done!"
     depends_on:
-      postgres:
-        condition: service_healthy
+      - postgres
     restart: "no"
 
   # --------------------------------------------------------------------------
@@ -174,11 +184,12 @@ services:
       - ./config/superset_config.py:/app/pythonpath/superset_config.py:ro
       - ./scripts:/app/scripts:ro
       - superset_home:/app/superset_home
+    extra_hosts:
+      - "postgres:host-gateway"
+      - "superset:host-gateway"
     depends_on:
-      postgres:
-        condition: service_healthy
-      superset-init:
-        condition: service_completed_successfully
+      - postgres
+      - superset-init
     restart: always
 
   # --------------------------------------------------------------------------
@@ -200,13 +211,15 @@ services:
       SUPERSET_DW_SQLALCHEMY_URI: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
     volumes:
       - ./scripts:/app/scripts:ro
+    extra_hosts:
+      - "postgres:host-gateway"
+      - "superset:host-gateway"
     entrypoint: /bin/bash
     command:
       - -c
       - python /app/scripts/superset_bootstrap.py
     depends_on:
-      superset:
-        condition: service_started
+      - superset
 
   # --------------------------------------------------------------------------
   # 6. Apache Airflow 3.1.8 — Initialization
@@ -223,8 +236,7 @@ services:
         airflow db migrate || airflow db init
         echo "Airflow initialization finished."
     depends_on:
-      postgres:
-        condition: service_healthy
+      - postgres
     restart: "no"
 
   # --------------------------------------------------------------------------
@@ -237,10 +249,8 @@ services:
     ports:
       - "${AIRFLOW_WEBSERVER_PORT:-8080}:8080"
     depends_on:
-      postgres:
-        condition: service_healthy
-      airflow-init:
-        condition: service_completed_successfully
+      - postgres
+      - airflow-init
     restart: always
 
   # --------------------------------------------------------------------------
@@ -251,10 +261,8 @@ services:
     container_name: airflow_scheduler_salud
     command: scheduler
     depends_on:
-      postgres:
-        condition: service_healthy
-      airflow-init:
-        condition: service_completed_successfully
+      - postgres
+      - airflow-init
     restart: always
 
   # --------------------------------------------------------------------------
@@ -267,10 +275,8 @@ services:
     container_name: airflow_dag_processor_salud
     command: dag-processor
     depends_on:
-      postgres:
-        condition: service_healthy
-      airflow-init:
-        condition: service_completed_successfully
+      - postgres
+      - airflow-init
     restart: always
 
   # --------------------------------------------------------------------------
@@ -302,9 +308,10 @@ services:
       - ./gx:/app/gx
       - ./scripts:/app/scripts
       - ./tests:/app/tests
+    extra_hosts:
+      - "postgres:host-gateway"
     depends_on:
-      postgres:
-        condition: service_healthy
+      - postgres
 
 volumes:
   pgdata:

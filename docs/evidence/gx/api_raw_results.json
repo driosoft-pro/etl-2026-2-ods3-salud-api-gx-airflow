@@ -1,10 +1,10 @@
 {
   "gate": "api_raw_validation",
-  "executed_at": "2026-10-18T09:54:19.010108+00:00",
+  "executed_at": "2026-10-18T18:32:12.288977+00:00",
   "total_rules": 2,
-  "passed_rules": 1,
-  "failed_rules": 1,
-  "has_critical_failure": true,
+  "passed_rules": 2,
+  "failed_rules": 0,
+  "has_critical_failure": false,
   "evaluations": [
     {
       "rule_id": "DQ-06",
@@ -21,10 +21,10 @@
       "rule_id": "DQ-07",
       "description": "Official population and surface from API must be positive (> 0)",
       "severity": "CRITICAL",
-      "success": false,
+      "success": true,
       "details": {
-        "invalid_population_count": 5,
-        "invalid_surface_count": 3
+        "invalid_population_count": 0,
+        "invalid_surface_count": 0
       }
     }
   ]

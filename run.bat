@@ -64,8 +64,27 @@ goto end
 
 :up
 echo Levantando infraestructura con %COMPOSE_CMD%...
-%COMPOSE_CMD% up -d postgres postgrest superset airflow-webserver airflow-scheduler
-%COMPOSE_CMD% run --rm superset-bootstrap python /app/scripts/superset_bootstrap.py
+echo [1/6] PostgreSQL DW...
+%COMPOSE_CMD% up -d postgres
+echo [2/6] PostgREST API...
+%COMPOSE_CMD% up -d postgrest
+echo [3/6] Superset init y servidor...
+%COMPOSE_CMD% up -d superset-init
+%COMPOSE_CMD% up -d superset
+echo [4/6] Airflow init, webserver, scheduler y dag-processor...
+%COMPOSE_CMD% up -d airflow-init
+%COMPOSE_CMD% up -d airflow-webserver airflow-scheduler airflow-dag-processor
+echo [5/6] Ejecutando bootstraps y dashboards de Superset...
+%COMPOSE_CMD% exec -T superset env SUPERSET_URL=http://localhost:8088 python /app/scripts/superset_bootstrap.py
+%COMPOSE_CMD% exec -T superset env SUPERSET_URL=http://localhost:8088 python /app/scripts/superset_charts_bootstrap.py
+%COMPOSE_CMD% exec -T superset env SUPERSET_URL=http://localhost:8088 python /app/scripts/dashboard/granularity.py
+%COMPOSE_CMD% exec -T superset env SUPERSET_URL=http://localhost:8088 python /app/scripts/dashboard/workshop.py
+%COMPOSE_CMD% exec -T superset env SUPERSET_URL=http://localhost:8088 python /app/scripts/dashboard/requirements.py
+echo [6/6] Ejecutando pipeline ETL para poblar el Data Warehouse...
+%COMPOSE_CMD% --profile tools run -T --no-deps --rm etl python -m src.etl_main
+echo ============================================================
+echo  PROYECTO LEVANTADO Y EJECUTADO EXITOSAMENTE
+echo ============================================================
 goto end
 
 :ports
@@ -100,7 +119,7 @@ del /q /s data\work\*.* 2>nul
 goto up
 
 :etl
-%COMPOSE_CMD% run --rm etl python -m src.etl_main
+%COMPOSE_CMD% --profile tools run -T --rm etl python -m src.etl_main
 goto end
 
 :trigger
@@ -112,26 +131,26 @@ goto end
 goto end
 
 :test_a
-%COMPOSE_CMD% run --rm etl python scripts/run_reliability_tests.py a
+%COMPOSE_CMD% --profile tools run -T --rm etl python scripts/run_reliability_tests.py a
 goto end
 
 :test_b
-%COMPOSE_CMD% run --rm etl python scripts/run_reliability_tests.py b
+%COMPOSE_CMD% --profile tools run -T --rm etl python scripts/run_reliability_tests.py b
 goto end
 
 :test_c
-%COMPOSE_CMD% run --rm etl python scripts/run_reliability_tests.py c
+%COMPOSE_CMD% --profile tools run -T --rm etl python scripts/run_reliability_tests.py c
 goto end
 
 :reliability
-%COMPOSE_CMD% run --rm etl python scripts/run_reliability_tests.py all
+%COMPOSE_CMD% --profile tools run -T --rm etl python scripts/run_reliability_tests.py all
 goto end
 
 :superset_init
-%COMPOSE_CMD% run --rm superset-bootstrap python /app/scripts/superset_bootstrap.py
-%COMPOSE_CMD% run --rm superset-bootstrap python /app/scripts/dashboard/granularity.py
-%COMPOSE_CMD% run --rm superset-bootstrap python /app/scripts/dashboard/workshop.py
-%COMPOSE_CMD% run --rm superset-bootstrap python /app/scripts/dashboard/requirements.py
+%COMPOSE_CMD% --profile bootstrap run -T --rm superset-bootstrap python /app/scripts/superset_bootstrap.py
+%COMPOSE_CMD% --profile bootstrap run -T --rm superset-bootstrap python /app/scripts/dashboard/granularity.py
+%COMPOSE_CMD% --profile bootstrap run -T --rm superset-bootstrap python /app/scripts/dashboard/workshop.py
+%COMPOSE_CMD% --profile bootstrap run -T --rm superset-bootstrap python /app/scripts/dashboard/requirements.py
 goto end
 
 :postgrest_test
@@ -139,7 +158,7 @@ curl -s "http://localhost:3000/v_r6_demographic_coverage?limit=3"
 goto end
 
 :test_unit
-%COMPOSE_CMD% run --rm etl pytest tests/
+%COMPOSE_CMD% --profile tools run -T --rm etl pytest tests/
 goto end
 
 :status
