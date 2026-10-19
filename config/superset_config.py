@@ -30,7 +30,15 @@ LANGUAGES = {
     "es": {"flag": "es", "name": "Español"},
 }
 
-# Mapas deck.gl (marcadores): token gratuito de https://account.mapbox.com/
-# Definir MAPBOX_API_KEY en .env. Sin token, el mapa coropletico por
-# departamento (country_map) funciona igual y no lo requiere.
+# Mapas deck.gl (marcadores):
+# Proveedores de mapas base libres de token y compatibles con CORS (CARTO Positron).
+# Si el usuario define MAPBOX_API_KEY en .env, también están disponibles los estilos oficiales de Mapbox.
+DECKGL_BASE_MAP = [
+    ["https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png", "CARTO Positron (sin token)"],
+    ["https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png", "CARTO Voyager (sin token)"],
+    ["mapbox://styles/mapbox/light-v9", "Mapbox Light"],
+    ["mapbox://styles/mapbox/streets-v9", "Mapbox Streets"],
+]
+
 MAPBOX_API_KEY = os.getenv("MAPBOX_API_KEY", "")
+

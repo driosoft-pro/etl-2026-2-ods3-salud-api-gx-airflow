@@ -161,6 +161,12 @@ M_SIZE = lambda: simple_metric("valor_norm", "MAX", "Tamaño relativo (% del má
 MAP_VIEWPORT = {"longitude": -73.0, "latitude": 4.6, "zoom": 4.6,
                 "bearing": 0, "pitch": 0}
 
+MAPBOX_STYLE = (
+    "mapbox://styles/mapbox/light-v9"
+    if os.getenv("MAPBOX_API_KEY", "").strip()
+    else "https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png"
+)
+
 MAP_CHARTS: list[dict] = [
     _spec(W, MAP_DATASET, "Req · Mapa — Coroplético por Departamento",
           "Mapa de Colombia: el color de cada departamento representa el indicador "
@@ -171,20 +177,21 @@ MAP_CHARTS: list[dict] = [
               "row_limit": 100})]),
     _spec(W, MAP_DATASET, "Req · Mapa — Marcadores por Departamento",
           "Marca (burbuja) en cada departamento; el tamaño representa el indicador "
-          "elegido en el filtro 'Requerimiento (mapa)'. Mapa base OpenStreetMap (sin token).",
+          "elegido en el filtro 'Requerimiento (mapa)'. Mapa base libre (sin token requerido).",
           [("deck_scatter", {
               "spatial": {"type": "latlong", "lonCol": "lon", "latCol": "lat"},
               "point_radius_fixed": {"type": "metric", "value": M_SIZE()},
-              "multiplier": 0.5, "point_unit": "pixels", "min_radius": 6,
-              "max_radius": 50, "row_limit": 100,
+              "multiplier": 0.4, "point_unit": "pixels", "min_radius": 6,
+              "max_radius": 45, "row_limit": 100,
               "groupby": ["departamento", "requerimiento"],
-              "metrics": [M_VALOR()],
-              # Mapa base OpenStreetMap: no requiere token de Mapbox
-              "mapbox_style": "tile://https://a.tile.openstreetmap.org/{z}/{x}/{y}.png",
+              "metrics": [M_VALOR(), M_SIZE()],
+              # Mapa base libre CARTO Positron o Mapbox Light si hay token
+              "mapbox_style": MAPBOX_STYLE,
               "tooltip_contents": [
                   {"item_type": "column", "column_name": "departamento"},
                   {"item_type": "column", "column_name": "requerimiento"},
-                  {"item_type": "metric", "metric_name": "Valor del indicador"}],
+                  {"item_type": "metric", "metric_name": "Valor del indicador"},
+                  {"item_type": "metric", "metric_name": "Tamaño relativo (% del máximo)"}],
               "viewport": MAP_VIEWPORT, "color_picker": {"r": 2, "g": 132, "b": 199, "a": 0.8},
               "autozoom": False, "js_columns": [], "adhoc_filters": []})]),
     _spec(W, MAP_DATASET, "Req · Mapa — Detalle por Departamento",
