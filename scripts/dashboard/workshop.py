@@ -27,6 +27,19 @@ def _bar(x: str, metric, limit: int, fmt: str = ",.0f",
         form["groupby"] = groupby
     return [("echarts_timeseries_bar", form)]
 
+
+def _pie(groupby: list[str], metric, donut: bool = True, limit: int = 10) -> list:
+    return [("pie", {
+        "groupby": groupby,
+        "metric": metric,
+        "metrics": [metric],
+        "donut": donut,
+        "show_legend": True,
+        "label_type": "key_percent",
+        "row_limit": limit,
+    })]
+
+
 W = "workshop"
 
 WORKSHOP_TITLE = "ODS 3 - Salud Colombia: Disparidades y Cobertura Territorial (R1–R7)"
@@ -113,11 +126,33 @@ WORKSHOP_CHARTS: list[dict] = [
           _bar("region", simple_metric("numero_afiliados", "SUM", "Afiliados"), 50,
                groupby=["regime"], stacked=True, show_value=False)),
 
+    # R6 Visuals
+    _spec(W, "v_r6_demographic_coverage", "R6 - Cobertura de Afiliacion por Departamento (%)",
+          "Porcentaje de afiliación SGSSS vs población censal oficial (API Colombia) por departamento.",
+          _bar("departamento", simple_metric("cobertura_afiliacion_pct", "MAX",
+                                             "Cobertura (%)", "NUMERIC"), 35,
+               fmt=",.1f", orientation="horizontal")),
+
+    _spec(W, "v_r6_demographic_coverage", "R6 - Distribucion por Categoria de Cobertura",
+          "Proporción de departamentos según su categoría de cobertura frente a la meta universal.",
+          _pie(["categoria_cobertura"], simple_metric("departamento", "COUNT", "Departamentos", "VARCHAR"))),
+
     _spec(W, "v_r6_demographic_coverage", "R6 - Cobertura Demografica por Departamento",
           "Cobertura de afiliación SGSSS vs población oficial: brecha y categoría por departamento.",
           [_table(["departamento", "region", "poblacion_oficial_api",
                    "total_afiliados_sgsss", "cobertura_afiliacion_pct",
                    "brecha_poblacional", "categoria_cobertura"], 50)]),
+
+    # R7 Visuals
+    _spec(W, "v_r7_territorial_capacity", "R7 - Camas por 1000 Habitantes (vs Estandar OMS)",
+          "Densidad de camas hospitalarias cada 1000 habitantes frente al estándar OMS (2.5) por departamento.",
+          _bar("departamento", simple_metric("camas_por_1000_hab", "MAX",
+                                             "Camas / 1000 hab", "NUMERIC"), 35,
+               fmt=",.2f", orientation="horizontal")),
+
+    _spec(W, "v_r7_territorial_capacity", "R7 - Distribucion por Nivel de Alerta Hospitalaria",
+          "Proporción de departamentos según nivel de alerta hospitalaria frente a la OMS.",
+          _pie(["nivel_alerta_hospitalaria"], simple_metric("departamento", "COUNT", "Departamentos", "VARCHAR"))),
 
     _spec(W, "v_r7_territorial_capacity", "R7 - Capacidad Territorial por Departamento",
           "Capacidad instalada, camas/1000 hab y nivel de alerta hospitalaria por departamento.",
@@ -141,9 +176,14 @@ WORKSHOP_LAYOUT: list = [
      ("chart", "R4 - Camas por 1000 Habitantes", 6, 42)],
     "R5: Disparidad territorial de afiliación por Región y régimen",
     [("chart", "R5 - Afiliados por Region y Regimen", 12, 44)],
-    "R6 & R7: Analítica departamental (cobertura demográfica y capacidad)",
-    [("chart", "R6 - Cobertura Demografica por Departamento", 6, 46),
-     ("chart", "R7 - Capacidad Territorial por Departamento", 6, 46)],
+    "R6: Cobertura demográfica y brecha de aseguramiento (SGSSS vs API Colombia)",
+    [("chart", "R6 - Cobertura de Afiliacion por Departamento (%)", 8, 52),
+     ("chart", "R6 - Distribucion por Categoria de Cobertura", 4, 52)],
+    [("chart", "R6 - Cobertura Demografica por Departamento", 12, 38)],
+    "R7: Capacidad hospitalaria territorial y alerta OMS (REPS vs API Colombia)",
+    [("chart", "R7 - Camas por 1000 Habitantes (vs Estandar OMS)", 8, 52),
+     ("chart", "R7 - Distribucion por Nivel de Alerta Hospitalaria", 4, 52)],
+    [("chart", "R7 - Capacidad Territorial por Departamento", 12, 38)],
 ]
 
 WORKSHOP_MARKDOWN: dict[str, str] = {

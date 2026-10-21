@@ -7,6 +7,8 @@ región, departamento, categoría de cobertura, nivel de alerta).
 
 from __future__ import annotations
 
+import os
+
 from common import (
     SupersetClient, ensure_database, ensure_dataset, ensure_chart,
     build_filters, apply_dashboard, simple_metric, _spec, _big, _table,
@@ -52,6 +54,18 @@ def _agg_table(groupby: list[str], metrics: list, limit: int = 50) -> tuple:
             "row_limit": limit, "order_desc": True, "include_search": True,
             "table_timestamp_format": "smart_date", "table_format": "flexible"}
     return ("table", form)
+
+
+def _pie(groupby: list[str], metric, donut: bool = True, limit: int = 10) -> list:
+    return [("pie", {
+        "groupby": groupby,
+        "metric": metric,
+        "metrics": [metric],
+        "donut": donut,
+        "show_legend": True,
+        "label_type": "key_percent",
+        "row_limit": limit,
+    })]
 
 
 def _bar(x: str, metric, limit: int, fmt: str = ",.0f",
@@ -184,7 +198,8 @@ MAP_CHARTS: list[dict] = [
               "multiplier": 0.4, "point_unit": "pixels", "min_radius": 6,
               "max_radius": 45, "row_limit": 100,
               "groupby": ["departamento", "requerimiento"],
-              "metrics": [M_VALOR(), M_SIZE()],
+              "metrics": [M_VALOR()], 
+                          #M_SIZE()],
               # Mapa base libre CARTO Positron o Mapbox Light si hay token
               "mapbox_style": MAPBOX_STYLE,
               "tooltip_contents": [
@@ -242,6 +257,14 @@ REQ_CHARTS: list[dict] = [
           [_agg_table(["region", "regime"], [M_AFF()], 50)]),
 
     # --- R6
+    _spec(W, "v_r6_demographic_coverage", "Req · R6 — Cobertura (%) por Departamento",
+          "R6: porcentaje de afiliación SGSSS vs población censal oficial por departamento.",
+          _bar("departamento", simple_metric("cobertura_afiliacion_pct", "MAX",
+                                             "Cobertura (%)", "NUMERIC"), 35,
+               fmt=",.1f", orientation="horizontal")),
+    _spec(W, "v_r6_demographic_coverage", "Req · R6 — Categoría de Cobertura",
+          "R6: proporción de departamentos por categoría frente a la meta universal.",
+          _pie(["categoria_cobertura"], simple_metric("departamento", "COUNT", "Departamentos", "VARCHAR"))),
     _spec(W, "v_r6_demographic_coverage", "Req · R6 — Cobertura Demográfica",
           "R6: cobertura de afiliación vs población oficial por departamento.",
           [_table(["departamento", "region", "poblacion_oficial_api",
@@ -249,6 +272,14 @@ REQ_CHARTS: list[dict] = [
                    "brecha_poblacional", "categoria_cobertura"], 50)]),
 
     # --- R7
+    _spec(W, "v_r7_territorial_capacity", "Req · R7 — Camas por 1000 hab (vs OMS)",
+          "R7: densidad de camas hospitalarias cada 1000 habitantes frente al estándar OMS (2.5).",
+          _bar("departamento", simple_metric("camas_por_1000_hab", "MAX",
+                                             "Camas / 1000 hab", "NUMERIC"), 35,
+               fmt=",.2f", orientation="horizontal")),
+    _spec(W, "v_r7_territorial_capacity", "Req · R7 — Nivel de Alerta Hospitalaria",
+          "R7: distribución de departamentos según nivel de alerta hospitalaria.",
+          _pie(["nivel_alerta_hospitalaria"], simple_metric("departamento", "COUNT", "Departamentos", "VARCHAR"))),
     _spec(W, "v_r7_territorial_capacity", "Req · R7 — Capacidad Territorial",
           "R7: capacidad instalada, camas/1000 hab y nivel de alerta por departamento.",
           [_table(["departamento", "region", "total_ips_habilitadas",
@@ -375,11 +406,15 @@ REQ_TABS: list[tuple[str, list]] = [
     ]),
     ("R6 · Cobertura Demográfica", [
         [("md", "tab_r6", 12, 26)],
-        [("chart", "Req · R6 — Cobertura Demográfica", 12, 50)],
+        [("chart", "Req · R6 — Cobertura (%) por Departamento", 7, 52),
+         ("chart", "Req · R6 — Categoría de Cobertura", 5, 52)],
+        [("chart", "Req · R6 — Cobertura Demográfica", 12, 44)],
     ]),
     ("R7 · Capacidad Territorial", [
         [("md", "tab_r7", 12, 26)],
-        [("chart", "Req · R7 — Capacidad Territorial", 12, 50)],
+        [("chart", "Req · R7 — Camas por 1000 hab (vs OMS)", 7, 52),
+         ("chart", "Req · R7 — Nivel de Alerta Hospitalaria", 5, 52)],
+        [("chart", "Req · R7 — Capacidad Territorial", 12, 44)],
     ]),
 ]
 
