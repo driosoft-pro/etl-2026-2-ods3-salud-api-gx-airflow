@@ -1,6 +1,6 @@
 {
   "gate": "primary_raw_validation",
-  "executed_at": "2026-10-21T05:48:03.327573+00:00",
+  "executed_at": "2026-10-21T22:59:48.169092+00:00",
   "total_rules": 5,
   "passed_rules": 5,
   "failed_rules": 0,
@@ -25,8 +25,8 @@
         "invalid_regimes": [],
         "found_regimes": [
           "C",
-          "S",
           "E",
+          "S",
           "I"
         ]
       }
